@@ -19,10 +19,10 @@ destination
 end
 
 subgraph customer aws
-stepfunction
+stepfunctions
 end
 
-clients<-->listener<-->destination<-->stepfunction
+clients<-->listener<-->destination<-->stepfunctions
 ```
 
 ## Deploying
@@ -33,8 +33,8 @@ To deploy the template:
 
 ```bash
 aws cloudformation deploy \
-  --template-file packet-counter.template.json \
-  --stack-name packet-counter-example \
+  --template-file packet-counter-sfn.template.json \
+  --stack-name packet-counter-sfn \
   --capabilities CAPABILITY_IAM \
   --region us-west-2
 ```
@@ -43,7 +43,7 @@ Once deployed, the endpoint can be tested with `ncat` and the endpoint informati
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name packet-counter-example \
+  --stack-name packet-counter-sfn \
   --query "Stacks[0].Outputs" \
   --region us-west-2 \
   > outputs.json 
@@ -62,7 +62,7 @@ That should elicite output of "Response: 1".
 
 To remove the example stack:
 ```bash
-aws cloudformation delete-stack --stack-name packet-counter-example --region us-west-2
+aws cloudformation delete-stack --stack-name packet-counter-sfn --region us-west-2
 ```
 
 ## StepFunctions Implementation
