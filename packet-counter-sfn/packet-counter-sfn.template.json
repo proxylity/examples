@@ -65,7 +65,7 @@
           "States": {
             "Count Packets by Source IP": {
               "Type": "Pass",
-              "Output": "{% (\n    $counts := $states.input.Messages.Remote{`IpAddress`: $count($)};\n    $replies := $each($counts, function($v, $i) { ({ \n        \"Tag\": $filter($states.input.Messages, function($m) { ($m.Remote.IpAddress = $i ) })[0].Tag,\n        \"Data\": $base64encode($string($v)) \n    }) });\n    {\n        \"Replies\": [$replies]\n    }\n) %}",
+              "Output": "{% (\n    $counts := $states.input.Messages.Remote{`IpAddress`: $count($)};\n    $replies := $each($counts, function($v, $i) { ({ \n        \"Tag\": $filter($states.input.Messages, function($m) { ($m.Remote.IpAddress = $i ) })[0].Tag,\n        \"Data\": $base64encode($string($v) & \"\\n\") \n    }) });\n    {\n        \"Replies\": [$replies]\n    }\n) %}",
               "End": true
             }
           },
