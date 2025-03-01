@@ -45,7 +45,7 @@
                   "logs:DescribeLogGroups"
                 ],
                 "Resource": [
-                  "/aws/vendedlogs/states/PacketCounterStateMachine-*"
+                  { "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/PacketCounterStateMachine-*" }
                 ]
               }
             ]
