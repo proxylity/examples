@@ -22,6 +22,15 @@
     }
   },
   "Resources": {
+    "ExecutionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/vendedlogs/states/PacketCounterStateMachine-${AWS::StackName}"
+        },
+        "RetentionInDays": 7
+      }
+    },
     "PacketCounterStateMachine": {
       "Type": "AWS::Serverless::StateMachine",
       "Properties": {
@@ -45,7 +54,7 @@
                   "logs:DescribeLogGroups"
                 ],
                 "Resource": [
-                  { "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/PacketCounterStateMachine-*" }
+                  "*"
                 ]
               }
             ]
@@ -62,6 +71,22 @@
           },
           "QueryLanguage": "JSONata",
           "TimeoutSeconds": 2
+        },
+        "Logging": {
+          "Level": "ALL",
+          "IncludeExecutionData": true,
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "ExecutionLogs",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ]
         }
       }
     },
