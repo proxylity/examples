@@ -1,0 +1,191 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a UDP service using an AWS Lambda Function connected to a Proxylity UDP Listener. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "PacketCounterLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Policies": [
+          "AWSLambdaBasicExecutionRole"
+        ],
+        "Handler": "index.handler",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Runtime": "nodejs22.x",
+        "InlineCode": {
+          "Fn::Join": [
+            "\n",
+            [
+              "exports.handler = async (inbound_packets) => {",
+              "  const counts_by_src = inbound_packets.Messages.reduce((acc, obj) => {",
+              "    const src = obj.Remote.IpAddress;",
+              "    acc[src] = (acc[src] || 0) + 1;",
+              "    return acc;",
+              "  }, {})",
+              "  function get_and_clear_count_in_b64(map, key) {",
+              "    const value = map[key];",
+              "    if (value == null) return null;",
+              "    map[key] = null;",
+              "    return btoa(value.toString() + '\\n');",
+              "  }",
+              "  const outbound_packets = inbound_packets.Messages.map(function (p) {",
+              "    const d = get_and_clear_count_in_b64(counts_by_src, p.Remote.IpAddress);",
+              "    if (d == null) return null;",
+              "    return {",
+              "      GeneratedAt: new Date().toISOString(),",
+              "      Tag: p.Tag, Data: d  ",
+              "    }",
+              "  });",
+              "  return { Replies: outbound_packets };",
+              "};"
+            ]
+          ]
+        }
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowLambdaInvoke",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Lambda",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "PacketCounterLambda",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the packet counter lambda, which returns a single response to each distinct client IP address.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 1000,
+              "TimeoutInSeconds": 1
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "PacketCounterLambda",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    }
+  }
+}
