@@ -1,0 +1,56 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Creates the regional lambda function connected to a Proxylity UDP listener.",
+  "Resources": {
+    "PacketCounterLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": "packet-counter",
+        "Policies": [
+          "AWSLambdaBasicExecutionRole"
+        ],
+        "Handler": "index.handler",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Runtime": "nodejs22.x",
+        "InlineCode": {
+          "Fn::Join": [
+            "\n",
+            [
+              "exports.handler = async (inbound_packets) => {",
+              "  const counts_by_src = inbound_packets.Messages.reduce((acc, obj) => {",
+              "    const src = obj.Remote.IpAddress;",
+              "    acc[src] = (acc[src] || 0) + 1;",
+              "    return acc;",
+              "  }, {})",
+              "  function get_and_clear_count_in_b64(map, key) {",
+              "    const value = map[key];",
+              "    if (value == null) return null;",
+              "    map[key] = null;",
+              { "Fn::Sub": "    return btoa(value.toString() + ' ${AWS::Region}\\n');" },
+              "  }",
+              "  const outbound_packets = inbound_packets.Messages.map(function (p) {",
+              "    const d = get_and_clear_count_in_b64(counts_by_src, p.Remote.IpAddress);",
+              "    if (d == null) return null;",
+              "    return {",
+              "      GeneratedAt: new Date().toISOString(),",
+              "      Tag: p.Tag, Data: d  ",
+              "    }",
+              "  });",
+              "  return { Replies: outbound_packets };",
+              "};"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "PacketCounterArn": {
+      "Value": {
+        "Fn::GetAtt": [ "PacketCounterLambda", "Arn" ]
+      }
+    }
+  }
+}
