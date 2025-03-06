@@ -1,0 +1,538 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example logging service using Proxylity UDP Gateway, a simple lambda function and state machine.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use this listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    },
+    "LogGroupRetentionInDays": {
+      "Description": "The number of days to retain logs in CloudWatch.",
+      "Type": "Number",
+      "Default": 7
+    },
+    "LogArchiveTransitionToGlacierInDays": {
+      "Description": "The number of days to wait before transitioning log objects in S3 to Glacier.",
+      "Type": "Number",
+      "Default": 28
+    },
+    "LogArchiveExpirationInDays": {
+      "Description": "The number of days to retain log objects in S3 before deleting them.",
+      "Type": "Number",
+      "Default": 365
+    },
+    "LogArchiveEncryptionKeyRotationInDays": {
+      "Description": "The number of days to rotate the KMS key used to encrypt log objects in S3.",
+      "Type": "Number",
+      "Default": 365
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Key": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": {
+          "Fn::Sub": "KMS key for encrypting log data in S3 for stack ${AWS::StackName}."
+        },
+        "EnableKeyRotation": true,
+        "RotationPeriodInDays": {
+          "Ref": "LogArchiveEncryptionKeyRotationInDays"
+        },
+        "KeyPolicy": {
+          "Version": "2012-10-17",
+          "Id": "key-s3",
+          "Statement": [
+            {
+              "Sid": "Enable IAM User Permissions",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Action": "kms:*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "Allow S3 to use the key",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "s3.amazonaws.com"
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Allow Firehose to use the key",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Allow CloudWatch to use the key",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logs.amazonaws.com"
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      }
+    },
+    "Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "${AWS::StackName}-${AWS::Region}"
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "aws:kms",
+                "KMSMasterKeyID": {
+                  "Fn::GetAtt": [ 
+                    "Key",
+                    "Arn"
+                  ]
+                }
+              },
+              "BucketKeyEnabled": true
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Status": "Enabled",
+              "ExpirationInDays": {
+                "Ref": "LogArchiveExpirationInDays"
+              },
+              "Transitions": [
+                {
+                  "TransitionInDays": {
+                    "Ref": "LogArchiveTransitionToGlacierInDays"
+                  },
+                  "StorageClass": "GLACIER"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "BucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "Bucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "SslIsRequired",
+              "Action": "s3:*",
+              "Effect": "Deny",
+              "Resource": [
+                {
+                  "Fn::Sub": "${Bucket.Arn}"
+                },
+                {
+                  "Fn::Sub": "${Bucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Principal": "*"
+            }
+          ]
+        }
+      }
+    },
+    "DeliveryLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/kinesisfirehose/${AWS::StackName}-firehose-logs"
+        },
+        "RetentionInDays": {
+          "Ref": "LogGroupRetentionInDays"
+        }
+      }
+    },
+    "DeliveryLogsStream": {
+      "Type": "AWS::Logs::LogStream",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "DeliveryLogs"
+        },
+        "LogStreamName": "delivery-errors"
+      }
+    },
+    "Firehose": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "Properties": {
+        "DeliveryStreamType": "DirectPut",
+        "DirectPutSourceConfiguration": {
+          "ThroughputHintInMBs": 1
+        },
+        "S3DestinationConfiguration": {
+          "CloudWatchLoggingOptions": {
+            "Enabled": true,
+            "LogGroupName": {
+              "Fn::Sub": "/aws/kinesisfirehose/${AWS::StackName}-firehose-logs"
+            },
+            "LogStreamName": "delivery-errors"
+          },
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "Bucket",
+              "Arn"
+            ]
+          },
+          "BufferingHints": {
+            "IntervalInSeconds": "60",
+            "SizeInMBs": "50"
+          },
+          "EncryptionConfiguration": {
+            "KMSEncryptionConfig": {
+              "AWSKMSKeyARN": {
+                "Fn::GetAtt": [ 
+                  "Key",
+                  "Arn"
+                ]
+              }
+            }
+          },
+          "CompressionFormat": "UNCOMPRESSED",
+          "Prefix": "syslog/",
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "FirehoseDeliveryRole",
+              "Arn"
+            ]
+          }
+        }
+      }
+    },
+    "FirehoseDeliveryRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "FirehoseDeliveryPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "FirehoseDeliveryPolicy",
+        "Roles": [
+          {
+            "Ref": "FirehoseDeliveryRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject",
+                "s3:PutObjectAcl",
+                "s3:PutObjectTagging"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${Bucket.Arn}/*"
+                },
+                {
+                  "Fn::Sub": "${Bucket.Arn}"
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Encrypt",
+                "kms:ReEncrypt*",
+                "kms:Decrypt",
+                "kms:GenerateDataKey*",
+                "kms:Describe*"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [ 
+                    "Key",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${DeliveryLogs.Arn}"
+                },
+                {
+                  "Fn::Sub": "${DeliveryLogs.Arn}/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Logs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/proxylity-examples/syslog-cw-${AWS::StackName}"
+        },
+        "RetentionInDays": {
+          "Ref": "LogGroupRetentionInDays"
+        }
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "ProxylityExecutionPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Firehose",
+                  "Effect": "Allow",
+                  "Action": [
+                    "firehose:PutRecord",
+                    "firehose:PutRecordBatch"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "Firehose",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Sid": "CloudWatch",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "${Logs.Arn}"
+                    },
+                    {
+                      "Fn::Sub": "${Logs.Arn}/*"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SyslogListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Name": "SyslogFirehose",
+            "Description": "This destination sends SYSLOG messages to S3 via Firehose for archival.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 1000,
+              "TimeoutInSeconds": 30
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Firehose",
+                "Arn"
+              ]
+            }
+          },
+          {
+            "Name": "SyslogLogs",
+            "Description": "This destination sends SYSLOG messages to CloudWatch.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 10
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Logs",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "BucketName": {
+      "Value": {
+        "Ref": "Bucket"
+      }
+    },
+    "LogGroup": {
+      "Value": {
+        "Ref": "Logs"
+      }
+    },
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${SyslogListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "SyslogListener",
+          "Port"
+        ]
+      }
+    }
+  }
+}
