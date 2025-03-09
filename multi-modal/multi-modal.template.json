@@ -1,0 +1,745 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a mixed HTTP and UDP service using AWS API Gateway and Proxylity UDP Gateway. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describing which IP addresses should be allowed to use the UDP listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Api": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-api"
+        },
+        "EndpointConfiguration": {
+          "Types": [
+            "REGIONAL"
+          ]
+        }
+      }
+    },
+    "ApiDeployment2": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "DependsOn": [
+        "PollMethod",
+        "RootMethod"
+      ],
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "Description": "Another production deployment"
+      }
+    },
+    "ApiStage": {
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "DeploymentId": {
+          "Ref": "ApiDeployment2"
+        },
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "StageName": "example"
+      }
+    },
+    "PollResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ParentId": {
+          "Fn::GetAtt": [
+            "Api",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "poll"
+      }
+    },
+    "PollMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ResourceId": {
+          "Ref": "PollResource"
+        },
+        "HttpMethod": "GET",
+        "AuthorizationType": "NONE",
+        "ApiKeyRequired": true,
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:states:action/DescribeExecution"
+          },
+          "Credentials": {
+            "Fn::GetAtt": [
+              "ApiGatewayRole",
+              "Arn"
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Join": [
+                "",
+                [
+                  "{ \"executionArn\": \"arn:aws:states:",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ":",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ":execution:",
+                  {
+                    "Fn::GetAtt": [
+                      "RootStateMachine",
+                      "Name"
+                    ]
+                  },
+                  ":",
+                  "$input.params('executionId')\" }"
+                ]
+              ]
+            }
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/json": "#set($inputRoot = $input.path('$'))\n{\n  \"status\": \"$inputRoot.status\"\n}"
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ]
+      }
+    },
+    "RootMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ResourceId": {
+          "Fn::GetAtt": [
+            "Api",
+            "RootResourceId"
+          ]
+        },
+        "HttpMethod": "GET",
+        "AuthorizationType": "NONE",
+        "ApiKeyRequired": true,
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+          },
+          "Credentials": {
+            "Fn::GetAtt": [
+              "ApiGatewayRole",
+              "Arn"
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Sub": "{ \"stateMachineArn\": \"${RootStateMachine}\", \"input\": \"{}\" }"
+            }
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/json": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "#set($inputRoot = $input.path('$'))\n<html><body><h2>Command to Send UDP:</h2><pre>printf \"${inputRoot.executionArn.split(':')[7]}\" | ncat -u ",
+                      {
+                        "Fn::Sub": "${UdpListener.Domain}.proxylity.com ${UdpListener.Port}</pre></body></html>"
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ]
+      }
+    },
+    "RootStateMachine": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "Definition": {
+          "Comment": "Root state machine that stores execution ID and waits for task completion",
+          "StartAt": "Store and Wait",
+          "States": {
+            "Store and Wait": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem.waitForTaskToken",
+              "Parameters": {
+                "TableName": {
+                  "Ref": "DynamoTable"
+                },
+                "Item": {
+                  "PK": {
+                    "S.$": "States.ArrayGetItem(States.StringSplit($$.Execution.Id, ':'), 7)"
+                  },
+                  "SK": {
+                    "S.$": "$$.Task.Token"
+                  }
+                }
+              },
+              "TimeoutSeconds": 900,
+              "End": true
+            }
+          }
+        },
+        "Type": "STANDARD",
+        "Policies": [
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:PutItem"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "DynamoTable",
+                    "Arn"
+                  ]
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "xray:PutTraceSegments",
+                  "xray:PutTelemetryRecords",
+                  "xray:GetSamplingRules",
+                  "xray:GetSamplingTargets"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogGroup",
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "UdpStateMachineLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 90,
+        "LogGroupName": {
+          "Fn::Join": [
+            "/",
+            [
+              "stepfunctions",
+              {
+                "Ref": "AWS::StackName"
+              },
+              "UdpStateMachineLogGroup"
+            ]
+          ]
+        }
+      }
+    },
+    "UdpStateMachine": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "Definition": {
+          "Comment": "State machine that processes UDP messages and updates tasks",
+          "StartAt": "Process Messages",
+          "States": {
+            "Process Messages": {
+              "Type": "Map",
+              "ItemsPath": "$.Messages",
+              "Parameters": {
+                "Message.$": "$$.Map.Item.Value"
+              },
+              "Iterator": {
+                "StartAt": "Query DynamoDB",
+                "States": {
+                  "Query DynamoDB": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:dynamodb:query",
+                    "Parameters": {
+                      "TableName": {
+                        "Ref": "DynamoTable"
+                      },
+                      "KeyConditionExpression": "PK = :pk",
+                      "ExpressionAttributeValues": {
+                        ":pk": {
+                          "S.$": "States.Base64Decode($.Message.Data)"
+                        }
+                      },
+                      "Limit": 1
+                    },
+                    "ResultPath": "$.QueryResult",
+                    "Next": "Check Query Results",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.Error",
+                        "Next": "Failed State"
+                      }
+                    ]
+                  },
+                  "Check Query Results": {
+                    "Type": "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.QueryResult.Count",
+                        "NumericGreaterThan": 0,
+                        "Next": "Send Task Success"
+                      }
+                    ],
+                    "Default": "Failed State"
+                  },
+                  "Send Task Success": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+                    "Parameters": {
+                      "TaskToken.$": "$.QueryResult.Items[0].SK.S",
+                      "Output": {
+                        "Tag.$": "$.Message.Tag",
+                        "Status": "SUCCESS"
+                      }
+                    },
+                    "ResultPath": "$.TaskResult",
+                    "Next": "Success State",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.Error",
+                        "Next": "Failed State"
+                      }
+                    ]
+                  },
+                  "Success State": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "Tag.$": "$.Message.Tag",
+                      "Data.$": "States.Base64Encode('SUCCESS\n')"
+                    },
+                    "End": true
+                  },
+                  "Failed State": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "Tag.$": "$.Message.Tag",
+                      "Data.$": "States.Base64Encode('FAILED\n')"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true,
+              "ResultSelector": {
+                "Replies.$": "$"
+              }
+            }
+          }
+        },
+        "Type": "EXPRESS",
+        "Tracing": {
+          "Enabled": true
+        },
+        "Logging": {
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "UdpStateMachineLogGroup",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "IncludeExecutionData": true,
+          "Level": "ALL"
+        },
+        "Policies": [
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:Query"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "DynamoTable",
+                    "Arn"
+                  ]
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "states:SendTaskSuccess"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "xray:PutTraceSegments",
+                  "xray:PutTelemetryRecords",
+                  "xray:GetSamplingRules",
+                  "xray:GetSamplingTargets"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogDelivery",
+                  "logs:GetLogDelivery",
+                  "logs:UpdateLogDelivery",
+                  "logs:DeleteLogDelivery",
+                  "logs:ListLogDeliveries",
+                  "logs:PutResourcePolicy",
+                  "logs:DescribeResourcePolicies",
+                  "logs:DescribeLogGroups"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents"
+                ],
+                "Resource": [
+                  {
+                    "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/UdpStateMachine-*:*"
+                  },
+                  {
+                    "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/UdpStateMachine-*"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the packet counter lambda, which returns a single response to each distinct client IP address.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 0.25
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "UdpStateMachine",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowStatesExecute",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Lambda",
+                  "Effect": "Allow",
+                  "Action": [
+                    "states:StartSyncExecution",
+                    "states:DescribeStateMachine"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "UdpStateMachine",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ApiGatewayRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [],
+        "Policies": [
+          {
+            "PolicyName": "StepFunctionsAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "states:StartExecution",
+                    "states:DescribeExecution"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "RootStateMachine",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ApiKey": {
+      "DependsOn": [
+        "ApiStage"
+      ],
+      "Type": "AWS::ApiGateway::ApiKey",
+      "Properties": {
+        "Name": "MultiModalApiKey",
+        "Enabled": true,
+        "StageKeys": [
+          {
+            "RestApiId": {
+              "Ref": "Api"
+            },
+            "StageName": "example"
+          }
+        ]
+      }
+    },
+    "UsagePlan": {
+      "DependsOn": [
+        "ApiStage"
+      ],
+      "Type": "AWS::ApiGateway::UsagePlan",
+      "Properties": {
+        "ApiStages": [
+          {
+            "ApiId": {
+              "Ref": "Api"
+            },
+            "Stage": "example"
+          }
+        ],
+        "Description": "Rate limited usage plan",
+        "Quota": {
+          "Limit": 1000,
+          "Period": "DAY"
+        },
+        "Throttle": {
+          "RateLimit": 1,
+          "BurstLimit": 2
+        }
+      }
+    },
+    "UsagePlanKey": {
+      "DependsOn": [
+        "ApiStage"
+      ],
+      "Type": "AWS::ApiGateway::UsagePlanKey",
+      "Properties": {
+        "KeyId": {
+          "Ref": "ApiKey"
+        },
+        "KeyType": "API_KEY",
+        "UsagePlanId": {
+          "Ref": "UsagePlan"
+        }
+      }
+    },
+    "DynamoTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST"
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "ApiEndpoint": {
+      "Value": {
+        "Fn::Sub": "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/example"
+      }
+    },
+    "ApiKey": {
+      "Value": {
+        "Ref": "ApiKey"
+      },
+      "Description": "API Key for accessing the rate-limited API. Include in `x-api-key` header."
+    }
+  }
+}
