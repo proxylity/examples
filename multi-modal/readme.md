@@ -8,7 +8,7 @@ This example demonstrates a workflow in which a browser request coordinates with
 4. The state machine which retrieves the `TaskToken` from DynamoDB.
 5. Then it uses the task token to trigger the completion of the wait task and allowing the first `RootStateMachine` execution to continue.  
 
-This type of flow can be found in Wi-Fi portal authentication, IoT device onboarding and other use cases an the basic construction here is easy to build on for more complex interactions and business logic.
+This type of flow can be found in Wi-Fi portal authentication, IoT device onboarding and other use cases. The basic construction here can be built on for more complex interactions and business logic.
 
 ## System Diagram
 
