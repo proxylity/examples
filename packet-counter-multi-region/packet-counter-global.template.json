@@ -65,6 +65,14 @@
                       "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:packet-counter:*"
                     }
                   ]
+                },
+                {
+                  "Sid": "CloudWatch",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
                 }
               ]
             }
@@ -116,6 +124,7 @@
               "Count": 1000,
               "TimeoutInSeconds": 1
             },
+            "MetricsEnabled": true,
             "DestinationArn": {
               "us-west-2": {
                 "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:packet-counter"
