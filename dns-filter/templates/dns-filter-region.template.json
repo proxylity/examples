@@ -1,0 +1,61 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Creates the regional DNS handler lambda function.",
+  "Mappings": {
+    "GlobalStack": {
+      "Outputs": {
+        "Fn::Transform": {
+          "Name": "AWS::Include",
+          "Parameters": {
+            "Location": "../global-stack-outputs.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "DnsFilterLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": "dns-filter",
+        "Handler": "dns-filter-lambda::DnsFilterLambda.Function::FunctionHandler",
+        "MemorySize": 1024,
+        "Timeout": 30,
+        "Runtime": "dotnet8",
+        "CodeUri": "../src/dns-filter-lambda",
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "TableName"
+              ]
+            }
+          }
+        },
+        "LoggingConfig": {
+          
+        },
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "LambdaRoleArn"
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "DnsFilterArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "DnsFilterLambda",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
