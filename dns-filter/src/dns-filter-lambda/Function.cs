@@ -3,7 +3,6 @@ using Amazon.DynamoDBv2;
 using System.Text.Json.Nodes;
 using System.Net;
 using Amazon.DynamoDBv2.Model;
-using DNS.Protocol;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -63,7 +62,7 @@ namespace DnsFilterLambda
 
         // Proxy
         var result = await ProxyUpstreamAsync(question);
-        foreach (var r in result.AnswerRecords) response.AnswerRecords.Add(r);
+        foreach (var r in result?.AnswerRecords ?? []) response.AnswerRecords.Add(r);
       }
 
       return new()
@@ -78,10 +77,18 @@ namespace DnsFilterLambda
           ? new DNS.Protocol.ResourceRecords.ResourceRecord(name, ip.GetAddressBytes(), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN, FILTERED_RECORD_TTL)
           : throw new ArgumentException("Only IPv4 addresses supported for A record");
 
-    static async Task<DNS.Protocol.IResponse> ProxyUpstreamAsync(DNS.Protocol.Question question)
+    static async Task<DNS.Protocol.IResponse?> ProxyUpstreamAsync(DNS.Protocol.Question question)
     {
-      var client = new DNS.Client.DnsClient(UPSTREAM_DNS);
-      return await client.Resolve(question.Name.ToString(), question.Type);
+      try
+      {
+        var client = new DNS.Client.DnsClient(UPSTREAM_DNS);
+        return await client.Resolve(question.Name.ToString(), question.Type);
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"Error resolving {question.Name}: {ex.Message}");
+        return null;
+      }
     }
 
     async Task<(bool blocked, IPAddress? to)> GetDomainInfo(string domain)
