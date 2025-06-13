@@ -26,6 +26,11 @@ DEPLOY_BUCKET_PATH_PREFIX="builds/"
 # The name of the stack to deploy.
 STACK_NAME="dns-filter"
 
+# Optionally, to set a custom domain name for DNS over HTTPS endpoint uncomment the line
+# below and set the domain name you want to use.  The domain will need to be registered
+# in Route53 in the same account you are deploying this example to.
+# DOMAIN_NAME=""
+
 #
 # D E P L O Y    G L O B A L    S T A C K
 #
@@ -73,6 +78,12 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
     # bucket name for the target region
     DEPLOY_BUCKET="${DEPLOY_BUCKET_NAME_PREFIX}${DEPLOY_REGION}"
 
+    # prepare parameter overrides
+    PARAMETER_OVERRIDES=""
+    if [ ! -z "${DOMAIN_NAME}" ]; then
+        PARAMETER_OVERRIDES="--parameter-overrides DomainName=${DOMAIN_NAME}"
+    fi
+
     # deploy the stack
     sam deploy \
         --stack-name ${STACK_NAME} \
@@ -80,5 +91,6 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
         --s3-prefix ${DEPLOY_BUCKET_PATH_PREFIX}${STACK_NAME} \
         --capabilities CAPABILITY_IAM \
         --no-fail-on-empty-changeset \
-        --region ${DEPLOY_REGION}
+        --region ${DEPLOY_REGION} \
+        ${PARAMETER_OVERRIDES}
 done

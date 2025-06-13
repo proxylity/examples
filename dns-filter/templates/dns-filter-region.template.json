@@ -2,6 +2,27 @@
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
   "Description": "Creates the regional DNS handler lambda function.",
+  "Parameters": {
+    "DomainName": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional custom domain name for the DNS over HTTPS endpoint"
+    }
+  },
+  "Conditions": {
+    "HasDomainName": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DomainName"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
   "Mappings": {
     "GlobalStack": {
       "Outputs": {
@@ -46,6 +67,216 @@
           ]
         }
       }
+    },
+    "DnsApi": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": "DoHApi",
+        "BinaryMediaTypes": [
+          "application/dns-message"
+        ],
+        "EndpointConfiguration": {
+          "Types": ["REGIONAL"]
+        }
+      }
+    },
+    "DnsApiResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": ["DnsApi", "RootResourceId"]
+        },
+        "PathPart": "dns-query",
+        "RestApiId": {
+          "Ref": "DnsApi"
+        }
+      }
+    },
+    "DnsApiMethodGet": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "ResourceId": {
+          "Ref": "DnsApiResource"
+        },
+        "HttpMethod": "GET",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": [
+              "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations",
+              {
+                "LambdaArn": {
+                  "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+                }
+              }
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Sub": [
+                "{\n  \"Messages\": [\n {\n \"Tag\": \"$context.requestId\",\n \"Remote\": {\n \"IpAddress\": \"$context.identity.sourceIp\",\n \"Port\": 0\n },\n \"Local\": {\n \"IpAddress\": \"0.0.0.0\",\n \"Port\": ${ListenerPort}\n },\n \"ReceivedAt\": \"$context.requestTime\",\n \"Data\": \"$input.params('dns')\"\n }\n ]\n}",
+                {
+                  "ListenerPort": {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "Port"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/dns-message": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
+              },
+              "ResponseParameters": {
+                "method.response.header.Content-Type": "'application/dns-message'"
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseParameters": {
+              "method.response.header.Content-Type": false
+            }
+          }
+        ]
+      }
+    },
+    "DnsApiMethodPost": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "ResourceId": {
+          "Ref": "DnsApiResource"
+        },
+        "HttpMethod": "POST",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": [
+              "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations",
+              {
+                "LambdaArn": {
+                  "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+                }
+              }
+            ]
+          },
+          "RequestTemplates": {
+            "application/dns-message": {
+              "Fn::Sub": [
+                "{\n  \"Messages\": [\n {\n \"Tag\": \"$context.requestId\",\n \"Remote\": {\n \"IpAddress\": \"$context.identity.sourceIp\",\n \"Port\": 0\n },\n \"Local\": {\n \"IpAddress\": \"0.0.0.0\",\n \"Port\": ${ListenerPort}\n },\n \"ReceivedAt\": \"$context.requestTime\",\n \"Data\": \"$util.base64Encode($input.body)\"\n }\n ]\n}",
+                {
+                  "ListenerPort": {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "Port"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/dns-message": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
+              },
+              "ResponseParameters": {
+                "method.response.header.Content-Type": "'application/dns-message'"
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseParameters": {
+              "method.response.header.Content-Type": false
+            }
+          }
+        ]
+      }
+    },
+    "DnsApiDeployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "DependsOn": ["DnsApiMethodGet", "DnsApiMethodPost"],
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "StageName": "prod"
+      }
+    },
+    "DnsApiCertificate": {
+      "Type": "AWS::CertificateManager::Certificate",
+      "Condition": "HasDomainName",
+      "Properties": {
+        "DomainName": {
+          "Ref": "DomainName"
+        },
+        "ValidationMethod": "DNS"
+      }
+    },
+    "DnsApiCustomDomain": {
+      "Type": "AWS::ApiGateway::DomainName",
+      "Condition": "HasDomainName",
+      "Properties": {
+        "DomainName": {
+          "Ref": "DomainName"
+        },
+        "SecurityPolicy": "TLS_1_2",
+        "EndpointConfiguration": {
+          "Types": ["REGIONAL"]
+        },
+        "RegionalCertificateArn": {
+          "Ref": "DnsApiCertificate"
+        }
+      }
+    },
+    "DnsApiBasePathMapping": {
+      "Type": "AWS::ApiGateway::BasePathMapping",
+      "Condition": "HasDomainName",
+      "Properties": {
+        "DomainName": {
+          "Ref": "DnsApiCustomDomain"
+        },
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "Stage": "prod"
+      }
+    },
+    "LambdaPermissionApiGateway": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DnsApi}/*/*/dns-query"
+        }
+      }
     }
   },
   "Outputs": {
@@ -56,6 +287,20 @@
           "Arn"
         ]
       }
+    },
+    "DnsApiUrl": {
+      "Value": {
+        "Fn::If": [
+          "HasDomainName",
+          {
+            "Fn::Sub": "https://${DomainName}/dns-query"
+          },
+          {
+            "Fn::Sub": "https://${DnsApi}.execute-api.${AWS::Region}.amazonaws.com/prod/dns-query"
+          }
+        ]
+      },
+      "Description": "DNS over HTTPS endpoint URL"
     }
   }
 }
