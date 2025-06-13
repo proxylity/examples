@@ -13,7 +13,7 @@ namespace DnsFilterLambda
   {
     static readonly string TABLE_NAME = Environment.GetEnvironmentVariable("TABLE_NAME") ?? throw new InvalidOperationException($"{nameof(TABLE_NAME)} environment variable is not set");
     static readonly IPAddress BLOCK_IP = IPAddress.Parse(Environment.GetEnvironmentVariable("BLOCK_IP") ?? "0.0.0.0");
-    static readonly IPAddress UPSTREAM_DNS = IPAddress.Parse(Environment.GetEnvironmentVariable("UPSTREAM_DNS") ?? "8.8.8.8");
+    static readonly IPAddress UPSTREAM_DNS = IPAddress.Parse(Environment.GetEnvironmentVariable("UPSTREAM_DNS") ?? "1.0.0.3");
     static readonly TimeSpan FILTERED_RECORD_TTL = TimeSpan.FromSeconds(300);
 
     readonly Dictionary<string, (bool blocked, IPAddress? to, DateTime expires)> _cache = [];
