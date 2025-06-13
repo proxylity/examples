@@ -170,9 +170,29 @@
                     "dynamodb:PutItem",
                     "dynamodb:GetItem",
                     "dynamodb:UpdateItem",
-                    "dynamodb:DeleteItem"
+                    "dynamodb:DeleteItem",
+                    "dynamodb:Query"
                   ],
-                  "Resource": { "Fn::GetAtt": [ "Table", "Arn" ] }
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:eu-west-1:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${Table}/index/*"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${Table}/index/*"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:eu-west-1:${AWS::AccountId}:table/${Table}/index/*"
+                    }
+                  ]
                 },
                 {
                   "Sid": "AllowLambdaLogging",
