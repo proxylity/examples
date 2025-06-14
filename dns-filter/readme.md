@@ -14,7 +14,7 @@ This example project provides a custom DNS serice with capabilities to:
 * Support traditional UDP based DNS
 * Support DNS over HTTPS (DoH) for use in browsers
 
-> **NOTE**: This service provides UDP based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port.  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
+> **NOTE**: This service provides UDP based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port.  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
 
 This code demonstrates:
 
