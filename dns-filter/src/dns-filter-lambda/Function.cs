@@ -18,11 +18,14 @@ namespace DnsFilterLambda
 
     readonly Dictionary<string, (bool blocked, IPAddress? to, DateTime expires)> _cache = [];
     readonly AsnLookupService _asnLookup = new();
+    static readonly DNS.Client.DnsClient _upstreamClient = new(UPSTREAM_DNS);
 
     public Function() : this(new AmazonDynamoDBClient()) { }
 
     public async Task<JsonObject> FunctionHandler(JsonObject input, ILambdaContext context)
     {
+      await Console.Out.WriteLineAsync($"Received event: {input.ToJsonString()}");
+
       await _asnLookup.InitializeAsync();
 
       var packets = input["Messages"]?.AsArray() ?? throw new InvalidOperationException("Invalid payload (not from UDP Gateway?)");
@@ -131,56 +134,77 @@ namespace DnsFilterLambda
 
     static async Task<DNS.Protocol.IResponse?> ProxyUpstreamAsync(DNS.Protocol.Question question)
     {
-      try
-      {
-        var client = new DNS.Client.DnsClient(UPSTREAM_DNS);
-        return await client.Resolve(question.Name.ToString(), question.Type);
-      }
-      catch (Exception ex)
-      {
-        Console.WriteLine($"Error resolving {question.Name}: {ex.Message}");
-        return null;
-      }
+        try
+        {
+            return await _upstreamClient.Resolve(question.Name.ToString(), question.Type);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error resolving {question.Name}: {ex.Message}");
+            return null;
+        }
     }
 
     async Task<(bool blocked, IPAddress? to)> GetDomainInfo(string domain)
     {
-      var now = DateTime.UtcNow;
-      var parts = domain.Split('.');
-      var roots = parts.Select((_, i) => string.Join('.', parts.Skip(i))).ToArray();
-      var (good, blocked, to) = roots.Aggregate((good: true, blocked: false, to: (IPAddress?)null),
-        (s, r) => _cache.TryGetValue(r, out var v) && now < v.expires ? (s.good &= true, s.blocked || v.blocked, s.to ?? v.to) : (false, s.blocked, s.to));
-      return good ? (blocked, to) : await RefreshDomainCache(roots);
+        var now = DateTime.UtcNow;
+        var parts = domain.Split('.');
+        var roots = parts.Select((_, i) => string.Join('.', parts.Skip(i))).ToArray();
+        
+        // Check if all cached and valid
+        if (roots.All(r => _cache.TryGetValue(r, out var cached) && now < cached.expires))
+        {
+            var blocked = false;
+            IPAddress? to = null;
+            foreach (var root in roots)
+            {
+                var cached = _cache[root];
+                blocked |= cached.blocked;
+                to ??= cached.to;
+            }
+            return (blocked, to);
+        }
+        
+        return await RefreshDomainCache(roots);
     }
 
     async Task<(bool blocked, IPAddress? to)> RefreshDomainCache(string[] roots)
     {
-      var requests = roots.Select(r => new GetItemRequest
-      {
-        TableName = TABLE_NAME,
-        Key = new Dictionary<string, AttributeValue>
+        var batchRequest = new BatchGetItemRequest
         {
-          { "PK", new AttributeValue { S = $"{r}" } },
-          { "SK", new AttributeValue { S = $"{r}" } }
-        }
-      });
-      var tasks = requests.Select(r => ddb.GetItemAsync(r).ContinueWith(t => (domain: r.Key["PK"].S, item: t.Result.Item)));
-      var responses = await Task.WhenAll(tasks);
-      var results = responses.Select(r => (
-        r.domain,
-        blocked: r.item?.TryGetValue("blocked", out var b) == true && b.BOOL == true,
-        redirect: r.item?.TryGetValue("redirect", out var t) == true ? t.S switch { string s => IPAddress.Parse(s), _ => null } : null)
-      );
+            RequestItems = new Dictionary<string, KeysAndAttributes>
+            {
+                [TABLE_NAME] = new KeysAndAttributes
+                {
+                    Keys = [.. roots.Select(r => new Dictionary<string, AttributeValue>
+                    {
+                        { "PK", new AttributeValue { S = r } },
+                        { "SK", new AttributeValue { S = r } }
+                    })]
+                }
+            }
+        };
 
-      var blocked = false;
-      IPAddress? to = null;
-      foreach (var result in results)
-      {
-        _cache[result.domain] = (result.blocked, result.redirect, DateTime.UtcNow.Add(FILTERED_RECORD_TTL));
-        blocked |= result.blocked;
-        to ??= result.redirect;
-      }
-      return (blocked, to);
+        var response = await ddb.BatchGetItemAsync(batchRequest);
+        var items = response.Responses.GetValueOrDefault(TABLE_NAME, []);
+        var itemLookup = items.ToDictionary(item => item["PK"].S);
+
+        var blocked = false;
+        IPAddress? to = null;
+        var expiration = DateTime.UtcNow.Add(FILTERED_RECORD_TTL);
+
+        foreach (var root in roots)
+        {
+            var hasItem = itemLookup.TryGetValue(root, out var item);
+            var isBlocked = hasItem && item.TryGetValue("blocked", out var b) && b.BOOL;
+            var redirect = hasItem && item.TryGetValue("redirect", out var r) ? IPAddress.Parse(r.S) : null;
+
+            _cache[root] = (isBlocked, redirect, expiration);
+            blocked |= isBlocked;
+            to ??= redirect;
+        }
+
+        return (blocked, to);
     }
 
     async Task<(bool blocked, IPAddress? to)> GetAsnInfo(IPAddress ip)

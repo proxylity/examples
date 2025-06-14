@@ -111,6 +111,9 @@
         },
         "HttpMethod": "GET",
         "AuthorizationType": "NONE",
+        "RequestParameters": {
+          "method.request.querystring.dns": true
+        },
         "Integration": {
           "Type": "AWS",
           "IntegrationHttpMethod": "POST",
@@ -130,7 +133,7 @@
           "RequestTemplates": {
             "application/json": {
               "Fn::Sub": [
-                "{\n  \"Messages\": [\n {\n \"Tag\": \"$context.requestId\",\n \"Remote\": {\n \"IpAddress\": \"$context.identity.sourceIp\",\n \"Port\": 0\n },\n \"Local\": {\n \"IpAddress\": \"0.0.0.0\",\n \"Port\": ${ListenerPort}\n },\n \"ReceivedAt\": \"$context.requestTime\",\n \"Data\": \"$input.params('dns')\"\n }\n ]\n}",
+                "{\"Messages\":[{\"Tag\":\"$context.requestId\",\"Remote\":{\"IpAddress\":\"$context.identity.sourceIp\",\"Port\":0},\"Local\":{\"IpAddress\":\"0.0.0.0\",\"Port\":${ListenerPort}},\"ReceivedAt\":\"$context.requestTime\",\"Data\":\"$input.params('dns')\"}]}",
                 {
                   "ListenerPort": {
                     "Fn::FindInMap": [
@@ -147,7 +150,7 @@
             {
               "StatusCode": "200",
               "ResponseTemplates": {
-                "application/dns-message": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
+                "application/json": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
               },
               "ResponseParameters": {
                 "method.response.header.Content-Type": "'application/dns-message'"
@@ -230,19 +233,6 @@
         ]
       }
     },
-    "DnsApiDeployment": {
-      "Type": "AWS::ApiGateway::Deployment",
-      "DependsOn": [
-        "DnsApiMethodGet",
-        "DnsApiMethodPost"
-      ],
-      "Properties": {
-        "RestApiId": {
-          "Ref": "DnsApi"
-        },
-        "StageName": "prod"
-      }
-    },
     "DnsApiCertificate": {
       "Type": "AWS::CertificateManager::Certificate",
       "Condition": "HasDomainName",
@@ -291,7 +281,9 @@
         "RestApiId": {
           "Ref": "DnsApi"
         },
-        "Stage": "prod"
+        "Stage": {
+          "Ref": "DnsApiStage"
+        }
       }
     },
     "DnsApiRoute53Record": {
@@ -342,6 +334,56 @@
           "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DnsApi}/*/*/dns-query"
         }
       }
+    },
+    "ApiGatewayLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/apigateway/${AWS::StackName}-doh-api"
+        },
+        "RetentionInDays": 7
+      }
+    },
+    "DnsApiDeployment0": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "DependsOn": [
+        "DnsApiMethodGet",
+        "DnsApiMethodPost"
+      ],
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        }
+      }
+    },
+    "DnsApiStage": {
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "DeploymentId": {
+          "Ref": "DnsApiDeployment0"
+        },
+        "StageName": "v0",
+        "AccessLogSetting": {
+          "DestinationArn": {
+            "Fn::GetAtt": [
+              "ApiGatewayLogGroup",
+              "Arn"
+            ]
+          }
+        },
+        "MethodSettings": [
+          {
+            "ResourcePath": "/*",
+            "HttpMethod": "*",
+            "LoggingLevel": "INFO",
+            "DataTraceEnabled": true,
+            "MetricsEnabled": true
+          }
+        ]
+      }
     }
   },
   "Outputs": {
@@ -361,7 +403,7 @@
             "Fn::Sub": "https://${DomainName}/dns-query"
           },
           {
-            "Fn::Sub": "https://${DnsApi}.execute-api.${AWS::Region}.amazonaws.com/prod/dns-query"
+            "Fn::Sub": "https://${DnsApi}.execute-api.${AWS::Region}.amazonaws.com/v0/dns-query"
           }
         ]
       },

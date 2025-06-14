@@ -169,6 +169,7 @@
                   "Action": [
                     "dynamodb:PutItem",
                     "dynamodb:GetItem",
+                    "dynamodb:BatchGetItem",
                     "dynamodb:UpdateItem",
                     "dynamodb:DeleteItem",
                     "dynamodb:Query"
