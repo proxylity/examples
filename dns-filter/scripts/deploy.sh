@@ -81,7 +81,7 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
     # prepare parameter overrides
     PARAMETER_OVERRIDES=""
     if [ ! -z "${DOMAIN_NAME}" ]; then
-        PARAMETER_OVERRIDES="--parameter-overrides DomainName=${DOMAIN_NAME}"
+        PARAMETER_OVERRIDES="--parameter-overrides DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
     fi
 
     # deploy the stack

@@ -6,7 +6,12 @@
     "DomainName": {
       "Type": "String",
       "Default": "",
-      "Description": "Optional custom domain name for the DNS over HTTPS endpoint"
+      "Description": "Optional custom domain name for the DNS over HTTPS endpoint. If specified, the DoH service will be available at ${DomainName}/dns-query, otherwise at the default API Gateway endpoint."
+    },
+    "HostedZoneId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "HostedZoneId of domain name. Conditionally required when DomainName is provided."
     }
   },
   "Conditions": {
@@ -56,9 +61,7 @@
             }
           }
         },
-        "LoggingConfig": {
-          
-        },
+        "LoggingConfig": {},
         "Role": {
           "Fn::FindInMap": [
             "GlobalStack",
@@ -76,7 +79,9 @@
           "application/dns-message"
         ],
         "EndpointConfiguration": {
-          "Types": ["REGIONAL"]
+          "Types": [
+            "REGIONAL"
+          ]
         }
       }
     },
@@ -84,7 +89,10 @@
       "Type": "AWS::ApiGateway::Resource",
       "Properties": {
         "ParentId": {
-          "Fn::GetAtt": ["DnsApi", "RootResourceId"]
+          "Fn::GetAtt": [
+            "DnsApi",
+            "RootResourceId"
+          ]
         },
         "PathPart": "dns-query",
         "RestApiId": {
@@ -111,7 +119,10 @@
               "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations",
               {
                 "LambdaArn": {
-                  "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+                  "Fn::GetAtt": [
+                    "DnsFilterLambda",
+                    "Arn"
+                  ]
                 }
               }
             ]
@@ -173,7 +184,10 @@
               "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations",
               {
                 "LambdaArn": {
-                  "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+                  "Fn::GetAtt": [
+                    "DnsFilterLambda",
+                    "Arn"
+                  ]
                 }
               }
             ]
@@ -218,7 +232,10 @@
     },
     "DnsApiDeployment": {
       "Type": "AWS::ApiGateway::Deployment",
-      "DependsOn": ["DnsApiMethodGet", "DnsApiMethodPost"],
+      "DependsOn": [
+        "DnsApiMethodGet",
+        "DnsApiMethodPost"
+      ],
       "Properties": {
         "RestApiId": {
           "Ref": "DnsApi"
@@ -233,7 +250,17 @@
         "DomainName": {
           "Ref": "DomainName"
         },
-        "ValidationMethod": "DNS"
+        "ValidationMethod": "DNS",
+        "DomainValidationOptions": [
+          {
+            "DomainName": {
+              "Ref": "DomainName"
+            },
+            "HostedZoneId": {
+              "Ref": "HostedZoneId"
+            }
+          }
+        ]
       }
     },
     "DnsApiCustomDomain": {
@@ -245,7 +272,9 @@
         },
         "SecurityPolicy": "TLS_1_2",
         "EndpointConfiguration": {
-          "Types": ["REGIONAL"]
+          "Types": [
+            "REGIONAL"
+          ]
         },
         "RegionalCertificateArn": {
           "Ref": "DnsApiCertificate"
@@ -265,12 +294,48 @@
         "Stage": "prod"
       }
     },
+    "DnsApiRoute53Record": {
+      "Type": "AWS::Route53::RecordSet",
+      "Condition": "HasDomainName",
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "HostedZoneId"
+        },
+        "Name": {
+          "Ref": "DomainName"
+        },
+        "Type": "A",
+        "Region": {
+          "Ref": "AWS::Region"
+        },
+        "SetIdentifier": {
+          "Fn::Sub": "doh-${AWS::Region}"
+        },
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "DnsApiCustomDomain",
+              "RegionalDomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::GetAtt": [
+              "DnsApiCustomDomain",
+              "RegionalHostedZoneId"
+            ]
+          }
+        }
+      }
+    },
     "LambdaPermissionApiGateway": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
         "Action": "lambda:InvokeFunction",
         "FunctionName": {
-          "Fn::GetAtt": ["DnsFilterLambda", "Arn"]
+          "Fn::GetAtt": [
+            "DnsFilterLambda",
+            "Arn"
+          ]
         },
         "Principal": "apigateway.amazonaws.com",
         "SourceArn": {
@@ -301,6 +366,24 @@
         ]
       },
       "Description": "DNS over HTTPS endpoint URL"
+    },
+    "DnsApiRegionalEndpoint": {
+      "Value": {
+        "Fn::If": [
+          "HasDomainName",
+          {
+            "Fn::GetAtt": [
+              "DnsApiCustomDomain",
+              "RegionalDomainName"
+            ]
+          },
+          {
+            "Fn::Sub": "${DnsApi}.execute-api.${AWS::Region}.amazonaws.com"
+          }
+        ]
+      },
+      "Description": "Regional API Gateway endpoint",
+      "Condition": "HasDomainName"
     }
   }
 }
