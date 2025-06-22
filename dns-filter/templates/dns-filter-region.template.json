@@ -482,6 +482,46 @@
         }
       }
     },
+    "DnsApiRootMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "DnsApi"
+        },
+        "ResourceId": {
+          "Fn::GetAtt": [
+            "DnsApi",
+            "RootResourceId"
+          ]
+        },
+        "HttpMethod": "GET",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseParameters": {
+                "method.response.header.Content-Type": "'text/html'"
+              },              "ResponseTemplates": {
+                "text/html": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>MyDNS Demo</title>\n    <style>\n        body {\n            font-family: system-ui, -apple-system, sans-serif;\n            font-size: 18px;\n            line-height: 1.6;\n            max-width: 800px;\n            margin: 0 auto;\n            padding: 2rem;\n            color: #333;\n        }\n        h1 {\n            color: #2c3e50;\n            margin-bottom: 1.5rem;\n        }\n        h2 {\n            color: #34495e;\n            margin-top: 2rem;\n            margin-bottom: 1rem;\n        }\n        p {\n            margin-bottom: 1rem;\n        }\n        ul {\n            margin-bottom: 1rem;\n            padding-left: 2rem;\n        }\n        li {\n            margin-bottom: 0.5rem;\n        }\n        a {\n            color: #3498db;\n            text-decoration: none;\n        }\n        a:hover {\n            text-decoration: underline;\n        }\n        code {\n            background-color: #f8f9fa;\n            padding: 0.2rem 0.4rem;\n            border-radius: 3px;\n            font-family: 'Courier New', monospace;\n        }\n    </style>\n</head>\n<body>\n    <h1>MyDNS</h1>\n    \n    <p>Welcome to MyDNS, a DNS filtering service that provides secure and customizable DNS resolution with advanced threat protection and analytics capabilities.</p>\n    \n    <p>This project was developed as part of a hackathon to demonstrate modern DNS filtering techniques using AWS serverless infrastructure. You can learn more about this implementation through the following resources:</p>\n    \n    <ul>\n        <li><a href=\"https://awslambdahackathon.devpost.com/\" target=\"_blank\">Hackathon Entry</a> - View the original hackathon submission</li>\n        <li><a href=\"https://proxylity.com/articles/run-your-own-serveless-dns.html\" target=\"_blank\">Proxylity Article</a> - Read the detailed technical article</li>\n        <li><a href=\"https://github.com/proxylity/serverless-dns\" target=\"_blank\">GitHub Repository</a> - Access the complete source code</li>\n    </ul>\n    \n    <h2>Configuration</h2>\n    \n    <p>To use MyDNS, you can configure your browser or device to use DNS over HTTPS (DoH) for secure DNS resolution. Most modern browsers support DoH configuration in their network settings.</p>\n    \n    <ul>\n        <li><strong>DoH Endpoint:</strong> <code>https://doh.whitepuffies.com/dns-query</code></li>\n        <li><strong>UDP DNS Endpoint:</strong> <code>ingress-1.proxylity.com:2069</code></li>\n    </ul>\n    \n    <p>For browser configuration, navigate to your browser's network or privacy settings and look for \"DNS over HTTPS\" or \"Secure DNS\" options. Enter the DoH endpoint URL above to start using MyDNS for secure DNS resolution.</p>\n</body>\n</html>"
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseParameters": {
+              "method.response.header.Content-Type": true
+            }
+          }
+        ]
+      }
+    },
     "DnsApiCertificate": {
       "Type": "AWS::CertificateManager::Certificate",
       "Condition": "HasDomainName",
@@ -592,11 +632,11 @@
         },
         "RetentionInDays": 7
       }
-    },
-    "DnsApiDeployment2": {
+    },    "DnsApiDeployment0": {
       "Type": "AWS::ApiGateway::Deployment",
       "DependsOn": [
-        "DnsApiDohMethods"
+        "DnsApiDohMethods",
+        "DnsApiRootMethod"
       ],
       "Properties": {
         "RestApiId": {
@@ -611,7 +651,7 @@
           "Ref": "DnsApi"
         },
         "DeploymentId": {
-          "Ref": "DnsApiDeployment2"
+          "Ref": "DnsApiDeployment0"
         },
         "StageName": "v0",
         "AccessLogSetting": {

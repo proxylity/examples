@@ -22,7 +22,7 @@ public class Function(IAmazonLambda lambdaClient)
 
     public async Task<APIGatewayProxyResponse> FunctionHandler(APIGatewayProxyRequest request, ILambdaContext context)
     {
-        await Console.Out.WriteLineAsync($"DoH request: {request.ToJsonString()}");
+        await Console.Out.WriteLineAsync($"DoH request: {JsonSerializer.Serialize(request)}");
         try
         {
             string dnsMessage = ExtractDnsMessage(request);
@@ -44,7 +44,7 @@ public class Function(IAmazonLambda lambdaClient)
                 var dnsResponse = replies[0]?["Data"]?.ToString()
                     ?? throw new InvalidOperationException("No DNS response data found");
 
-                await Console.Out.WriteLineAsync($"DoH response: {dnsResponse}");
+                await Console.Out.WriteLineAsync($"DoH response: {JsonSerializer.Serialize(dnsResponse)}");
                 return new APIGatewayProxyResponse
                 {
                     StatusCode = 200,

@@ -1,27 +1,33 @@
-## Bespoke DNS with Filtering
+# MyDNS
+
+MyDNS is a personal DNS service that can be run in your own AWS account and provides UDP and DNS over HTTPS endpoints. DoH is optional, and requires a registered domain name (see below).  MyDNS implements blocking (NXDOMAIN responses) and redirecting (override the IP) for both domain names and Autonomous Systems (by ASN). Optionally, but by default, it also provides logging of DNS queries and analysis of those logs for suspicious activity.
 
 This project is motivated by some simple realities around DNS:
 
-* DNS is a foundational service that enables using the internet effectively
-* DNS filtering is a capability that protects users and networks from undesirable content and certain kinds of malfeasance, misuse and abuse and is implemented on school and enterprise campuses, many places you may find guest/visitor Wi-Fi. 
-* Privacy concerns motivate eschewing (avoiding) using DNS services provided by ISPs and others who may collect DNS information to build user profiles and sell them to third parties.
+* DNS is a foundational service required to use the internet effectively
+* DNS filtering is a capability that protects users and networks from undesirable content, malfeasance, misuse and abuse and is implemented on schools, enterprises, and many places you may find guest/visitor Wi-Fi. 
+* Privacy concerns motivate avoiding using DNS services provided by ISPs and others who may collect DNS information to build user profiles and sell them to third parties.
 
-This example project provides a custom DNS service with capabilities to:
+## Features
 
-* Block domains by returning an unrouteable address like `0.0.0.0`
-* Redirect domains by returning a specified IP address (to a portal, for example)
-* Block or redirect IPs by Autonomous System Number (ASN)
-* Support traditional UDP based DNS ([RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484))
-* Support DNS over HTTPS (DoH) for use in browsers
+* Block domains by returning an "nonexistent domain" (NXDOMAIN) response when queries for them
+* Redirect domains by returning a specified IP address (to a portal, for example) for matching queries
+* Block or redirect IPs by Autonomous System Number (ASN) by examining upstream DNS responses and matching the IPs they return to ASNs.
+* Support the traditional UDP-based DNS that is used by most devices and operating systems
+* Support DNS over HTTPS (DoH) for use in browsers ([RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484))
+* Proxy all other DNS requests to an upstream DNS server of your choice (default is 1.0.0.3).  The upstream DNS will see a random Lambda IP address as the client, enhancing privacy.
+* Very low usage-based cost (free when within the AWS and Proxylity free tiers). 
 
-> **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port.  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
+> **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port, so a network level configuration is required to use it (DNAT at the router).  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
 
-This code demonstrates:
+In this repository you'll find the following code:
 
-* Replying to UDP requests using AWS Lambda via Proxylity UDP Gateway.
-* Deserialization and serialization of DNS queries and answers from packet data.
-* Replying to HTTPS requests using the same Lambda via API Gateway with VTL request and response transforms.
-* Deploying a capable, highly-scalable, resilient and very cost effective global DNS service. 
+* Scripts in `bash` that automate the deployment of MyDNS into your AWS account
+* CloudFormation templates to configure the AWS resources needed, including DynamoDB tables, API Gateways, Route53 Record Sets, Lambda Functions, EventBridge Rules, and IAM Roles and Policies.
+* C# code for Lambda functions that parse, process and reply to UDP DNS requests using AWS Lambda via Proxylity UDP Gateway.
+* Deserialization and serialization of DNS queries and answers from packet data using the `DNS` nuget package.
+* Handling of DoH GET and POST requests received via API Gateway
+* DNS log analysis with basic checks for suspicious activity using entropy and other measures 
 
 ## System Diagram
 
@@ -39,14 +45,21 @@ end
 
 subgraph customer aws
 api-gateway
+dns-api-lambda
 dns-filter-lambda
 dynamodb-table
+event-bridge
+dns-logs-bucket
+dns-analysis-lambda
+dns-asn-sync-lambda
 end
 
 dns_clients--UDP-->listener-->destination-->dns-filter-lambda
-browsers--DoH-->api-gateway-->dns-filter-lambda
+browsers--DoH-->api-gateway-->dns-api-lambda-->dns-filter-lambda
 dns-filter-lambda-->dynamodb-table
-dynamodb-table-->dns-filter-lambda
+dns-analysis-lambda-->dynamodb-table
+dns-filter-lambda-->dns-logs-bucket-->dns-analysis-lambda
+event-bridge-->dns-asn-sync-lambda--->dynamodb-table
 ```
 
 ## Deploying
