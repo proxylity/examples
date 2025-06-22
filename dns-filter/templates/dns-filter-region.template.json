@@ -1,7 +1,7 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
-  "Description": "Creates the regional DNS handler lambda function.",
+  "Description": "Creates the regional DNS handler lambda function, API and other resources.",
   "Parameters": {
     "DomainName": {
       "Type": "String",
@@ -394,124 +394,22 @@
         "FunctionName": "dns-filter-adapter-for-api",
         "MemorySize": 1024,
         "Timeout": 30,
-        "Runtime": "nodejs20.x",
-        "Handler": "index.handler",
-        "InlineCode": {
-          "Fn::Join": [
-            "\n",
-            [
-              "const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');",
-              "const lambdaClient = new LambdaClient();",
-              "",
-              "exports.handler = async (event) => {",
-              "  try {",
-              "    let dnsMessage;",
-              "    ",
-              "    if (event.httpMethod === 'GET') {",
-              "      // Handle GET request with dns query parameter",
-              "      const dnsParam = event.queryStringParameters?.dns;",
-              "      if (!dnsParam) {",
-              "        return {",
-              "          statusCode: 400,",
-              "          headers: { 'Content-Type': 'text/plain' },",
-              "          body: 'Missing dns parameter'",
-              "        };",
-              "      }",
-              "      // URL-safe base64 to standard base64",
-              "      let base64 = dnsParam.replace(/-/g, '+').replace(/_/g, '/');",
-              "      const mod = base64.length % 4;",
-              "      if (mod === 2) base64 += '==';",
-              "      else if (mod === 3) base64 += '=';",
-              "      dnsMessage = base64;",
-              "    } else if (event.httpMethod === 'POST') {",
-              "      // Handle POST request with binary body",
-              "      if (!event.body) {",
-              "        return {",
-              "          statusCode: 400,",
-              "          headers: { 'Content-Type': 'text/plain' },",
-              "          body: 'Missing request body'",
-              "        };",
-              "      }",
-              "      // Body is already base64 encoded by API Gateway",
-              "      dnsMessage = event.isBase64Encoded ? event.body : Buffer.from(event.body).toString('base64');",
-              "    } else {",
-              "      return {",
-              "        statusCode: 405,",
-              "        headers: { 'Content-Type': 'text/plain' },",
-              "        body: 'Method not allowed'",
-              "      };",
-              "    }",
-              "",
-              "    const dnsFilterPayload = {",
-              "      Messages: [{",
-              "        Tag: event.requestContext.requestId,",
-              "        Remote: {",
-              "          IpAddress: event.requestContext.identity.sourceIp,",
-              "          Port: 0",
-              "        },",
-              "        Local: {",
-              "          IpAddress: '0.0.0.0',",
-              {
-                "Fn::Sub": [
-                  "          Port: ${ListenerPort}",
-                  {
-                    "ListenerPort": {
-                      "Fn::FindInMap": [
-                        "GlobalStack",
-                        "Outputs",
-                        "Port"
-                      ]
-                    }
-                  }
-                ]
-              },
-              "        },",
-              "        ReceivedAt: new Date().toISOString(),",
-              "        Data: dnsMessage",
-              "      }]",
-              "    };",
-              "",
-              "    const invokeParams = {",
-              {
-                "Fn::Sub": "      FunctionName: '${DnsFilterLambda}',"
-              },
-              "      Payload: JSON.stringify(dnsFilterPayload)",
-              "    };",
-              "",
-              "    const command = new InvokeCommand(invokeParams);",
-              "    const response = await lambdaClient.send(command);",
-              "",
-              "    const payload = JSON.parse(Buffer.from(response.Payload).toString());",
-              "",
-              "    if (payload.Replies && payload.Replies.length > 0) {",
-              "      const dnsResponse = payload.Replies[0].Data;",
-              "      return {",
-              "        statusCode: 200,",
-              "        headers: {",
-              "          'Content-Type': 'application/dns-message',",
-              "          'Cache-Control': 'max-age=300'",
-              "        },",
-              "        body: dnsResponse,",
-              "        isBase64Encoded: true",
-              "      };",
-              "    } else {",
-              "      return {",
-              "        statusCode: 500,",
-              "        headers: { 'Content-Type': 'text/plain' },",
-              "        body: 'No replies found in DNS filter response'",
-              "      };",
-              "    }",
-              "  } catch (error) {",
-              "    console.error('Error calling DNS filter lambda:', error);",
-              "    return {",
-              "      statusCode: 500,",
-              "      headers: { 'Content-Type': 'text/plain' },",
-              "      body: 'Internal server error'",
-              "    };",
-              "  }",
-              "};"
-            ]
-          ]
+        "Runtime": "dotnet8",
+        "CodeUri": "../src/json-adapter-lambda/",
+        "Handler": "json-adapter-lambda::JsonAdapterLambda.Function::FunctionHandler",
+        "Environment": {
+          "Variables": {
+            "DNS_FILTER_FUNCTION_NAME": {
+              "Ref": "DnsFilterLambda"
+            },
+            "UDP_LISTENER_PORT": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "Port"
+              ]
+            }
+          }
         },
         "Policies": [
           "AWSLambdaBasicExecutionRole",
@@ -539,7 +437,7 @@
         }
       }
     },
-    "DnsApiResource": {
+    "DnsApiDohResource": {
       "Type": "AWS::ApiGateway::Resource",
       "Properties": {
         "ParentId": {
@@ -554,46 +452,16 @@
         }
       }
     },
-    "DnsApiMethodGet": {
+    "DnsApiDohMethods": {
       "Type": "AWS::ApiGateway::Method",
       "Properties": {
         "RestApiId": {
           "Ref": "DnsApi"
         },
         "ResourceId": {
-          "Ref": "DnsApiResource"
+          "Ref": "DnsApiDohResource"
         },
-        "HttpMethod": "GET",
-        "AuthorizationType": "NONE",
-        "Integration": {
-          "Type": "AWS_PROXY",
-          "IntegrationHttpMethod": "POST",
-          "Uri": {
-            "Fn::Sub": [
-              "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations",
-              {
-                "LambdaArn": {
-                  "Fn::GetAtt": [
-                    "JsonAdapterForApiLambda",
-                    "Arn"
-                  ]
-                }
-              }
-            ]
-          }
-        }
-      }
-    },
-    "DnsApiMethodPost": {
-      "Type": "AWS::ApiGateway::Method",
-      "Properties": {
-        "RestApiId": {
-          "Ref": "DnsApi"
-        },
-        "ResourceId": {
-          "Ref": "DnsApiResource"
-        },
-        "HttpMethod": "POST",
+        "HttpMethod": "ANY",
         "AuthorizationType": "NONE",
         "Integration": {
           "Type": "AWS_PROXY",
@@ -728,8 +596,7 @@
     "DnsApiDeployment2": {
       "Type": "AWS::ApiGateway::Deployment",
       "DependsOn": [
-        "DnsApiMethodGet",
-        "DnsApiMethodPost"
+        "DnsApiDohMethods"
       ],
       "Properties": {
         "RestApiId": {
@@ -768,14 +635,6 @@
     }
   },
   "Outputs": {
-    "DnsFilterArn": {
-      "Value": {
-        "Fn::GetAtt": [
-          "DnsFilterLambda",
-          "Arn"
-        ]
-      }
-    },
     "DnsApiUrl": {
       "Value": {
         "Fn::If": [
@@ -789,6 +648,16 @@
         ]
       },
       "Description": "DNS over HTTPS endpoint URL"
+    },
+    "DnsUdpEndpoint": {
+      "Value": {
+        "Fn::FindInMap": [
+          "GlobalStack",
+          "Outputs",
+          "Endpoint"
+        ]
+      },
+      "Description": "UDP DNS endpoint (for nslookup, dig, and non-browser devices). Note this isn't the standard port 53, but a custom port and configuration options will depend on the device/network."
     },
     "DnsApiRegionalEndpoint": {
       "Value": {

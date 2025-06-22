@@ -5,7 +5,6 @@ using System.Net;
 using Amazon.DynamoDBv2.Model;
 using Amazon.KinesisFirehose;
 using System.Net.Sockets;
-using DNS.Protocol;
 using System.Data;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
