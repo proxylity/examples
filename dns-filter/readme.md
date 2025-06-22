@@ -6,12 +6,12 @@ This project is motivated by some simple realities around DNS:
 * DNS filtering is a capability that protects users and networks from undesirable content and certain kinds of malfeasance, misuse and abuse and is implemented on school and enterprise campuses, many places you may find guest/visitor Wi-Fi. 
 * Privacy concerns motivate eschewing (avoiding) using DNS services provided by ISPs and others who may collect DNS information to build user profiles and sell them to third parties.
 
-This example project provides a custom DNS serice with capabilities to:
+This example project provides a custom DNS service with capabilities to:
 
-* Block domains by returning an unroutable address like `0.0.0.0`
+* Block domains by returning an unrouteable address like `0.0.0.0`
 * Redirect domains by returning a specified IP address (to a portal, for example)
 * Block or redirect IPs by Autonomous System Number (ASN)
-* Support traditional UDP based DNS
+* Support traditional UDP based DNS ([RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484))
 * Support DNS over HTTPS (DoH) for use in browsers
 
 > **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port.  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.

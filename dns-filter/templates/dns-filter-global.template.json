@@ -1,7 +1,7 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
-  "Description": "Global resources for a UDP Gateway based DNS filtering service. Deploying this template requires a subscription to UDP Gateway in AWS Marketplace.",
+  "Description": "Global resources for a UDP Gateway based DNS filtering service with analytics. Deploying this template requires a subscription to UDP Gateway in AWS Marketplace.",
   "Parameters": {
     "ClientCidrToAllow": {
       "Description": "The CIDR describine which IP addresses should be allowed to use this listener. Default is open/everyone.",
@@ -140,7 +140,7 @@
         ]
       }
     },
-    "LambdaRole": {
+    "DnsHandlerLambdaRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
         "AssumeRolePolicyDocument": {
@@ -203,14 +203,96 @@
                     "logs:CreateLogStream",
                     "logs:PutLogEvents"
                   ],
-                  "Resource": {
-                    "Fn::Sub": "*"
-                  }
+                  "Resource": "*"
                 }
               ]
             }
           }
         ]
+      }
+    },
+    "AnalysisLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["lambda.amazonaws.com"]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AnalysisLambdaBasePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowDdbWrite",
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:eu-west-1:${AWS::AccountId}:table/${Table}"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "AllowEventBridge",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:event-bus/default"
+                  }
+                },
+                {
+                  "Sid": "AllowLambdaLogging",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "FirehoseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["firehose.amazonaws.com"]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
       }
     },
     "Table": {
@@ -269,18 +351,27 @@
   },
   "Outputs": {
     "TableName": {
-      "Description": "Name of the DynamoDB table holding DNS filter data (blocks and redirects)",
+      "Description": "Name of the DynamoDB table holding DNS filter data",
       "Value": {
         "Ref": "Table"
       }
     },
-    "LambdaRoleArn": {
-      "Description": "ARN of the IAM role to use with the Lambda function",
+    "DnsHandlerLambdaRoleArn": {
+      "Description": "ARN of the IAM role to use with the DNS filter Lambda function",
       "Value": {
-        "Fn::GetAtt": [
-          "LambdaRole",
-          "Arn"
-        ]
+        "Fn::GetAtt": ["DnsHandlerLambdaRole", "Arn"]
+      }
+    },
+    "AnalysisLambdaRoleArn": {
+      "Description": "ARN of the IAM role to use with the DNS analysis Lambda function",
+      "Value": {
+        "Fn::GetAtt": ["AnalysisLambdaRole", "Arn"]
+      }
+    },
+    "FirehoseRoleArn": {
+      "Description": "ARN of the IAM role to use with Kinesis Firehose",
+      "Value": {
+        "Fn::GetAtt": ["FirehoseRole", "Arn"]
       }
     },
     "Domain": {
@@ -290,10 +381,7 @@
     },
     "Port": {
       "Value": {
-        "Fn::GetAtt": [
-          "DnsListener",
-          "Port"
-        ]
+        "Fn::GetAtt": ["DnsListener", "Port"]
       }
     },
     "Endpoint": {

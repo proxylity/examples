@@ -12,6 +12,16 @@
       "Type": "String",
       "Default": "",
       "Description": "HostedZoneId of domain name. Conditionally required when DomainName is provided."
+    },
+    "UpstreamDns": {
+      "Description": "Upstream DNS server to use for queries that aren't blocked or redirected",
+      "Type": "String",
+      "Default": "1.0.0.3"
+    },
+    "DnsLogRetentionDays": {
+      "Description": "Number of days to retain DNS query logs in S3, and other logs in CloudWatch Logs",
+      "Type": "Number",
+      "Default": 30
     }
   },
   "Conditions": {
@@ -23,6 +33,18 @@
               "Ref": "DomainName"
             },
             ""
+          ]
+        }
+      ]
+    },
+    "LogQueries": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DnsLogRetentionDays"
+            },
+            0
           ]
         }
       ]
@@ -41,6 +63,287 @@
     }
   },
   "Resources": {
+    "QueryLogBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Condition": "LogQueries",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "dns-query-logs-${AWS::AccountId}-${AWS::Region}"
+        },
+        "NotificationConfiguration": {
+          "EventBridgeConfiguration": {
+            "EventBridgeEnabled": true
+          }
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "DeleteOldLogs",
+              "Status": "Enabled",
+              "ExpirationInDays": {
+                "Ref": "DnsLogRetentionDays"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "FirehoseDeliveryPolicy": {
+      "Condition": "LogQueries",
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "FirehoseDeliveryPolicy-${AWS::Region}"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${QueryLogBucket.Arn}"
+                },
+                {
+                  "Fn::Sub": "${QueryLogBucket.Arn}/*"
+                }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "FirehoseRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "QueryLogFirehose": {
+      "Condition": "LogQueries",
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "DependsOn": "FirehoseDeliveryPolicy",
+      "Properties": {
+        "DeliveryStreamName": {
+          "Fn::Sub": "dns-query-logs-${AWS::Region}"
+        },
+        "DeliveryStreamType": "DirectPut",
+        "S3DestinationConfiguration": {
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "QueryLogBucket",
+              "Arn"
+            ]
+          },
+          "RoleARN": {
+            "Fn::FindInMap": [
+              "GlobalStack",
+              "Outputs",
+              "FirehoseRoleArn"
+            ]
+          },
+          "Prefix": "year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
+          "ErrorOutputPrefix": "errors/",
+          "BufferingHints": {
+            "SizeInMBs": 5,
+            "IntervalInSeconds": 60
+          },
+          "CompressionFormat": "GZIP"
+        }
+      }
+    },
+    "DnsFilterFirehosePolicy": {
+      "Condition": "LogQueries",
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "DnsFilterFirehosePolicy-${AWS::Region}"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": {
+                "Fn::GetAtt": [
+                  "QueryLogFirehose",
+                  "Arn"
+                ]
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "DnsHandlerLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "AnalysisS3Policy": {
+      "Condition": "LogQueries",
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "AnalysisS3Policy-${AWS::Region}"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject"
+              ],
+              "Resource": {
+                "Fn::Sub": "${QueryLogBucket.Arn}/*"
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "AnalysisLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "AnalysisEventRule": {
+      "Condition": "LogQueries",
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Trigger DNS analysis when new query logs are created",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "Object Created"
+          ],
+          "detail": {
+            "bucket": {
+              "name": [
+                {
+                  "Ref": "QueryLogBucket"
+                }
+              ]
+            }
+          }
+        },
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "DnsAnalysisLambda",
+                "Arn"
+              ]
+            },
+            "Id": "DnsAnalysisTarget"
+          }
+        ]
+      }
+    },
+    "AnalysisEventPermission": {
+      "Condition": "LogQueries",
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "DnsAnalysisLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "AnalysisEventRule",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "DnsAnalysisLambda": {
+      "Condition": "LogQueries",
+      "DependsOn": "AnalysisS3Policy",
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": "dns-analysis",
+        "CodeUri": "../src/dns-analysis-lambda",
+        "Handler": "dns-analysis-lambda::DnsAnalysisLambda.Function::FunctionHandler",
+        "Runtime": "dotnet8",
+        "Timeout": 30,
+        "MemorySize": 1024,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "AnalysisLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "TableName"
+              ]
+            }
+          }
+        }
+      }
+    },
     "DnsFilterLambda": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
@@ -58,6 +361,20 @@
                 "Outputs",
                 "TableName"
               ]
+            },
+            "LOG_FIREHOSE_STREAM": {
+              "Fn::If": [
+                "LogQueries",
+                {
+                  "Ref": "QueryLogFirehose"
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            },
+            "UPSTREAM_DNS": {
+              "Ref": "UpstreamDns"
             }
           }
         },
@@ -66,9 +383,146 @@
           "Fn::FindInMap": [
             "GlobalStack",
             "Outputs",
-            "LambdaRoleArn"
+            "DnsHandlerLambdaRoleArn"
           ]
         }
+      }
+    },
+    "JsonAdapterForApiLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": "dns-filter-adapter-for-api",
+        "MemorySize": 1024,
+        "Timeout": 30,
+        "Runtime": "nodejs20.x",
+        "Handler": "index.handler",
+        "InlineCode": {
+          "Fn::Join": [
+            "\n",
+            [
+              "const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');",
+              "const lambdaClient = new LambdaClient();",
+              "",
+              "exports.handler = async (event) => {",
+              "  try {",
+              "    let dnsMessage;",
+              "    ",
+              "    if (event.httpMethod === 'GET') {",
+              "      // Handle GET request with dns query parameter",
+              "      const dnsParam = event.queryStringParameters?.dns;",
+              "      if (!dnsParam) {",
+              "        return {",
+              "          statusCode: 400,",
+              "          headers: { 'Content-Type': 'text/plain' },",
+              "          body: 'Missing dns parameter'",
+              "        };",
+              "      }",
+              "      // URL-safe base64 to standard base64",
+              "      let base64 = dnsParam.replace(/-/g, '+').replace(/_/g, '/');",
+              "      const mod = base64.length % 4;",
+              "      if (mod === 2) base64 += '==';",
+              "      else if (mod === 3) base64 += '=';",
+              "      dnsMessage = base64;",
+              "    } else if (event.httpMethod === 'POST') {",
+              "      // Handle POST request with binary body",
+              "      if (!event.body) {",
+              "        return {",
+              "          statusCode: 400,",
+              "          headers: { 'Content-Type': 'text/plain' },",
+              "          body: 'Missing request body'",
+              "        };",
+              "      }",
+              "      // Body is already base64 encoded by API Gateway",
+              "      dnsMessage = event.isBase64Encoded ? event.body : Buffer.from(event.body).toString('base64');",
+              "    } else {",
+              "      return {",
+              "        statusCode: 405,",
+              "        headers: { 'Content-Type': 'text/plain' },",
+              "        body: 'Method not allowed'",
+              "      };",
+              "    }",
+              "",
+              "    const dnsFilterPayload = {",
+              "      Messages: [{",
+              "        Tag: event.requestContext.requestId,",
+              "        Remote: {",
+              "          IpAddress: event.requestContext.identity.sourceIp,",
+              "          Port: 0",
+              "        },",
+              "        Local: {",
+              "          IpAddress: '0.0.0.0',",
+              {
+                "Fn::Sub": [
+                  "          Port: ${ListenerPort}",
+                  {
+                    "ListenerPort": {
+                      "Fn::FindInMap": [
+                        "GlobalStack",
+                        "Outputs",
+                        "Port"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "        },",
+              "        ReceivedAt: new Date().toISOString(),",
+              "        Data: dnsMessage",
+              "      }]",
+              "    };",
+              "",
+              "    const invokeParams = {",
+              {
+                "Fn::Sub": "      FunctionName: '${DnsFilterLambda}',"
+              },
+              "      Payload: JSON.stringify(dnsFilterPayload)",
+              "    };",
+              "",
+              "    const command = new InvokeCommand(invokeParams);",
+              "    const response = await lambdaClient.send(command);",
+              "",
+              "    const payload = JSON.parse(Buffer.from(response.Payload).toString());",
+              "",
+              "    if (payload.Replies && payload.Replies.length > 0) {",
+              "      const dnsResponse = payload.Replies[0].Data;",
+              "      return {",
+              "        statusCode: 200,",
+              "        headers: {",
+              "          'Content-Type': 'application/dns-message',",
+              "          'Cache-Control': 'max-age=300'",
+              "        },",
+              "        body: dnsResponse,",
+              "        isBase64Encoded: true",
+              "      };",
+              "    } else {",
+              "      return {",
+              "        statusCode: 500,",
+              "        headers: { 'Content-Type': 'text/plain' },",
+              "        body: 'No replies found in DNS filter response'",
+              "      };",
+              "    }",
+              "  } catch (error) {",
+              "    console.error('Error calling DNS filter lambda:', error);",
+              "    return {",
+              "      statusCode: 500,",
+              "      headers: { 'Content-Type': 'text/plain' },",
+              "      body: 'Internal server error'",
+              "    };",
+              "  }",
+              "};"
+            ]
+          ]
+        },
+        "Policies": [
+          "AWSLambdaBasicExecutionRole",
+          {
+            "LambdaInvokePolicy": {
+              "FunctionName": {
+                "Ref": "DnsFilterLambda"
+              }
+            }
+          }
+        ]
       }
     },
     "DnsApi": {
@@ -111,11 +565,8 @@
         },
         "HttpMethod": "GET",
         "AuthorizationType": "NONE",
-        "RequestParameters": {
-          "method.request.querystring.dns": true
-        },
         "Integration": {
-          "Type": "AWS",
+          "Type": "AWS_PROXY",
           "IntegrationHttpMethod": "POST",
           "Uri": {
             "Fn::Sub": [
@@ -123,49 +574,14 @@
               {
                 "LambdaArn": {
                   "Fn::GetAtt": [
-                    "DnsFilterLambda",
+                    "JsonAdapterForApiLambda",
                     "Arn"
                   ]
                 }
               }
             ]
-          },
-          "RequestTemplates": {
-            "application/json": {
-              "Fn::Sub": [
-                "{\"Messages\":[{\"Tag\":\"$context.requestId\",\"Remote\":{\"IpAddress\":\"$context.identity.sourceIp\",\"Port\":0},\"Local\":{\"IpAddress\":\"0.0.0.0\",\"Port\":${ListenerPort}},\"ReceivedAt\":\"$context.requestTime\",\"Data\":\"$input.params('dns')\"}]}",
-                {
-                  "ListenerPort": {
-                    "Fn::FindInMap": [
-                      "GlobalStack",
-                      "Outputs",
-                      "Port"
-                    ]
-                  }
-                }
-              ]
-            }
-          },
-          "IntegrationResponses": [
-            {
-              "StatusCode": "200",
-              "ResponseTemplates": {
-                "application/json": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
-              },
-              "ResponseParameters": {
-                "method.response.header.Content-Type": "'application/dns-message'"
-              }
-            }
-          ]
-        },
-        "MethodResponses": [
-          {
-            "StatusCode": "200",
-            "ResponseParameters": {
-              "method.response.header.Content-Type": false
-            }
           }
-        ]
+        }
       }
     },
     "DnsApiMethodPost": {
@@ -180,7 +596,7 @@
         "HttpMethod": "POST",
         "AuthorizationType": "NONE",
         "Integration": {
-          "Type": "AWS",
+          "Type": "AWS_PROXY",
           "IntegrationHttpMethod": "POST",
           "Uri": {
             "Fn::Sub": [
@@ -188,49 +604,14 @@
               {
                 "LambdaArn": {
                   "Fn::GetAtt": [
-                    "DnsFilterLambda",
+                    "JsonAdapterForApiLambda",
                     "Arn"
                   ]
                 }
               }
             ]
-          },
-          "RequestTemplates": {
-            "application/dns-message": {
-              "Fn::Sub": [
-                "{\n  \"Messages\": [\n {\n \"Tag\": \"$context.requestId\",\n \"Remote\": {\n \"IpAddress\": \"$context.identity.sourceIp\",\n \"Port\": 0\n },\n \"Local\": {\n \"IpAddress\": \"0.0.0.0\",\n \"Port\": ${ListenerPort}\n },\n \"ReceivedAt\": \"$context.requestTime\",\n \"Data\": \"$util.base64Encode($input.body)\"\n }\n ]\n}",
-                {
-                  "ListenerPort": {
-                    "Fn::FindInMap": [
-                      "GlobalStack",
-                      "Outputs",
-                      "Port"
-                    ]
-                  }
-                }
-              ]
-            }
-          },
-          "IntegrationResponses": [
-            {
-              "StatusCode": "200",
-              "ResponseTemplates": {
-                "application/dns-message": "#set($replies = $input.path('$.Replies'))\n#if($replies.size() > 0)\n$util.base64Decode($replies[0].Data)\n#else\n\n#end"
-              },
-              "ResponseParameters": {
-                "method.response.header.Content-Type": "'application/dns-message'"
-              }
-            }
-          ]
-        },
-        "MethodResponses": [
-          {
-            "StatusCode": "200",
-            "ResponseParameters": {
-              "method.response.header.Content-Type": false
-            }
           }
-        ]
+        }
       }
     },
     "DnsApiCertificate": {
@@ -325,7 +706,7 @@
         "Action": "lambda:InvokeFunction",
         "FunctionName": {
           "Fn::GetAtt": [
-            "DnsFilterLambda",
+            "JsonAdapterForApiLambda",
             "Arn"
           ]
         },
@@ -344,7 +725,7 @@
         "RetentionInDays": 7
       }
     },
-    "DnsApiDeployment0": {
+    "DnsApiDeployment2": {
       "Type": "AWS::ApiGateway::Deployment",
       "DependsOn": [
         "DnsApiMethodGet",
@@ -363,7 +744,7 @@
           "Ref": "DnsApi"
         },
         "DeploymentId": {
-          "Ref": "DnsApiDeployment0"
+          "Ref": "DnsApiDeployment2"
         },
         "StageName": "v0",
         "AccessLogSetting": {
