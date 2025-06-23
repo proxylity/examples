@@ -3,33 +3,12 @@ set -ex
 
 # This script deploys the dns-filter example to multiple regions in a simple
 # and demonstrative way. YMMV. Edit the environment variables in the configuration
-# section to suit your needs.
+# script (configure.sh) before running this one.
 
 #
 # C O N F I G U R A T I O N
 #
-
-# The regions that will host handlers for the dns-filter example. The global
-# stack will be deployed to us-west-2. 
-DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
-
-# The prefix of the bucket name to use for deployment artifacts. This will be suffixed
-# with the region name, and a bucket with the resuling name must exist in each deployment
-# region (due to the way CloudFormation/SAM works).   
-DEPLOY_BUCKET_NAME_PREFIX="cpdev-"
-
-# The S3 path prefix to use for deployment artifacts. The `cloudformation deploy` and
-# `sam deploy` commands will use this prefix to store artifacts used in the respective
-# stacks.
-DEPLOY_BUCKET_PATH_PREFIX="builds/"
-
-# The name of the stack to deploy.
-STACK_NAME="dns-filter"
-
-# Optionally, to set a custom domain name for DNS over HTTPS endpoint uncomment the line
-# below and set the domain name you want to use.  The domain will need to be registered
-# in Route53 in the same account you are deploying this example to.
-# DOMAIN_NAME=""
+. "$(dirname "${BASH_SOURCE[0]}")/configure.sh"
 
 #
 # D E P L O Y    G L O B A L    S T A C K
@@ -81,7 +60,13 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
     # prepare parameter overrides
     PARAMETER_OVERRIDES=""
     if [ ! -z "${DOMAIN_NAME}" ]; then
-        PARAMETER_OVERRIDES="--parameter-overrides DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
+        PARAMETER_OVERRIDES="DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
+    fi
+    if [ ! -z "${DNS_LOG_RETENTION}" ]; then
+        PARAMETER_OVERRIDES="${PARAMETER_OVERRIDES} DnsLogRetentionDays=${DNS_LOG_RETENTION}"
+    fi
+    if [ ! -z "${PARAMETER_OVERRIDES}" ]; then
+        PARAMETER_OVERRIDES="--parameter-overrides ${PARAMETER_OVERRIDES}"
     fi
 
     # deploy the stack
