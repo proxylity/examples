@@ -278,6 +278,107 @@
         ]
       }
     },
+    "AsnDataLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["lambda.amazonaws.com"]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AsnDataLambdaBasePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowDdbQuery",
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:Query"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:eu-west-1:${AWS::AccountId}:table/${Table}"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${Table}/index/GSI1"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${Table}/index/GSI1"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:dynamodb:eu-west-1:${AWS::AccountId}:table/${Table}/index/GSI1"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "AllowLambdaLogging",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ApiAdapterLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["lambda.amazonaws.com"]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "ApiAdapterLambdaBasePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowLambdaLogging",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
     "FirehoseRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -366,6 +467,18 @@
       "Description": "ARN of the IAM role to use with the DNS analysis Lambda function",
       "Value": {
         "Fn::GetAtt": ["AnalysisLambdaRole", "Arn"]
+      }
+    },
+    "ApiAdapterLambdaRoleArn": {
+      "Description": "ARN of the IAM role to use with the API adapter Lambda function",
+      "Value": {
+        "Fn::GetAtt": ["ApiAdapterLambdaRole", "Arn"]
+      }
+    },
+    "AsnDataLambdaRoleArn": {
+      "Description": "ARN of the IAM role to use with the ASN data Lambda function",
+      "Value": {
+        "Fn::GetAtt": ["AsnDataLambdaRole", "Arn"]
       }
     },
     "FirehoseRoleArn": {

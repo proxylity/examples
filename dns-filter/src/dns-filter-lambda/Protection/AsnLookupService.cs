@@ -1,9 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
-using Amazon.DynamoDBv2;
+using Amazon.S3;
 
 namespace DnsFilterLambda;
-public class AsnLookupService(IAmazonDynamoDB ddb)
+
+public class AsnLookupService(IAmazonS3 s3)
 {
     private AsnBlockLookup _asnBlockLookup = null!;
 
@@ -11,7 +12,7 @@ public class AsnLookupService(IAmazonDynamoDB ddb)
 
     private volatile bool _isInitialized;
 
-    public AsnLookupService() : this (new AmazonDynamoDBClient())
+    public AsnLookupService() : this (new AmazonS3Client())
     {
     }
 
@@ -34,24 +35,23 @@ public class AsnLookupService(IAmazonDynamoDB ddb)
 
     private async Task<ReadOnlyMemory<byte>> LoadBlockDataAsync(CancellationToken cancellationToken = default)
     {
-        var response = await ddb.GetItemAsync(new()
+        try
         {
-            TableName = Function.TABLE_NAME,
-            Key = new()
+            var response = await s3.GetObjectAsync(new()
             {
-                ["PK"] = new("ASN_BLOCK_DATA"),
-                ["SK"] = new("ASN_BLOCK_DATA")
+                BucketName = Function.BUCKET_NAME,
+                Key = "asn-block-data.bin"
+            }, cancellationToken);
 
-            }
-        }, cancellationToken);
-
-        if (response.Item?.TryGetValue("Data", out var dataAttr) == true  && dataAttr?.B is MemoryStream dataBytes)
-        { 
-            return dataBytes.ToArray();
+            using var stream = response.ResponseStream;
+            var buffer = new byte[response.ContentLength];
+            await stream.ReadExactlyAsync(buffer.AsMemory(0, (int)response.ContentLength), cancellationToken);
+            return buffer;
+        } catch (Exception ex)
+        {
+            await Console.Out.WriteLineAsync($"Failed to get ASN block data from S3: {ex.Message}");
+            return ReadOnlyMemory<byte>.Empty; // Return empty if not found or error
         }
-
-        await Console.Out.WriteLineAsync("No ASN block data found in DynamoDB.");
-        return ReadOnlyMemory<byte>.Empty; // Return empty if no data found
     }
 
     public uint? LookupAsn(IPAddress ipAddress)

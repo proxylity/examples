@@ -18,10 +18,9 @@
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="2.6.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.4" />
-    <PackageReference Include="AWSSDK.Core" Version="4.0.0.10" />
+    <PackageReference Include="AWSSDK.Core" Version="4.0.0.11" />
     <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.1.6" />
-    <PackageReference Include="AWSSDK.KinesisFirehose" Version="4.0.1.6" />
+    <PackageReference Include="AWSSDK.EventBridge" Version="4.0.1.5" />
     <PackageReference Include="AWSSDK.S3" Version="4.0.1.6" />
-    <PackageReference Include="DNS" Version="7.0.0" />
   </ItemGroup>
 </Project>

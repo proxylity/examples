@@ -3,6 +3,8 @@ using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.KinesisFirehose;
 using Amazon.Lambda.Core;
+using Amazon.S3;
+using Amazon.S3.Model;
 using Moq;
 using Xunit;
 
@@ -15,7 +17,8 @@ public class UnitTests
     {
         Mock<IAmazonDynamoDB> ddb = new();
         Mock<IAmazonKinesisFirehose> firehose = new();
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Mock<IAmazonS3> s3 = new();
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
         Assert.NotNull(function);
     }
 
@@ -23,7 +26,6 @@ public class UnitTests
     public void FunctionHandlerReturnsJsonObjectWithRepliesArray()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GetItemResponse
             {
@@ -34,8 +36,15 @@ public class UnitTests
             {
                 Responses = []
             });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
 
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
         var input = new JsonObject { ["Messages"] = new JsonArray() };
         var context = new Mock<ILambdaContext>();
 
@@ -50,7 +59,6 @@ public class UnitTests
     public void FunctionHandlerReturnsRepliesWithMatchingTags()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GetItemResponse
             {
@@ -60,6 +68,13 @@ public class UnitTests
             .ReturnsAsync(new BatchGetItemResponse
             {
                 Responses = []
+            });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
             });
 
         var request = new DNS.Protocol.Request();
@@ -73,7 +88,8 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
         var result = function.FunctionHandler(input, context.Object).Result;
 
         var replies = (JsonArray)result["Replies"]!;
@@ -92,7 +108,6 @@ public class UnitTests
     public void FunctionHandlerCachesBlockedDomains()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         var blocked = new HashSet<string> { "example.com" };
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .Returns<BatchGetItemRequest, CancellationToken>((request, token) => Task.FromResult(new BatchGetItemResponse
@@ -115,6 +130,14 @@ public class UnitTests
             {
                 Item = request.Key["PK"].S.StartsWith("AS#") ? [] : []
             }));
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+        
 
         var request = new DNS.Protocol.Request();
         request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("example.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
@@ -126,7 +149,8 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result1 = function.FunctionHandler(input, context.Object).Result;
         var result2 = function.FunctionHandler(input, context.Object).Result;
@@ -134,14 +158,13 @@ public class UnitTests
         // called once with each part of the domain, but only for the first request
         ddb.Verify(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()), Times.Exactly(1));
         // called one for the ASN lookup, but only for the first request
-        ddb.Verify(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()), Times.Exactly(1));
+        s3.Verify(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()), Times.Exactly(1));
     }
 
     [Fact]
     public void FunctionHandlerReturnsBlockedIpForBlockedDomains()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         var blocked = new HashSet<string> { "example.com" };
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .Returns<BatchGetItemRequest, CancellationToken>((request, token) => Task.FromResult(new BatchGetItemResponse
@@ -164,6 +187,14 @@ public class UnitTests
             {
                 Item = request.Key["PK"].S.StartsWith("AS#") ? [] : []
             }));
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
 
         var request = new DNS.Protocol.Request();
         request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("example.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
@@ -175,7 +206,8 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result1 = function.FunctionHandler(input, context.Object).Result;
         var result2 = function.FunctionHandler(input, context.Object).Result;
@@ -184,17 +216,14 @@ public class UnitTests
         var reply_data = Convert.FromBase64String(replies[0]!["Data"]!.ToString()!);
         var response = DNS.Protocol.Response.FromArray(reply_data);
 
-        Assert.Single(response.AnswerRecords);
-        Assert.Equal(DNS.Protocol.RecordType.A, response.AnswerRecords[0].Type);
-        Assert.Equal(DNS.Protocol.RecordClass.IN, response.AnswerRecords[0].Class);
-        Assert.Equal([0, 0, 0, 0], response.AnswerRecords[0].Data);
+        Assert.Equal(DNS.Protocol.ResponseCode.NameError, response.ResponseCode);
+        Assert.Empty(response.AnswerRecords);
     }
 
     [Fact]
     public void FunctionHandlerReturnsRedirectIpForRedirectedDomains()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         var redirected = new Dictionary<string, string> { ["example.com"] = "3.4.5.6" };
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .Returns<BatchGetItemRequest, CancellationToken>((request, token) => Task.FromResult(new BatchGetItemResponse
@@ -217,6 +246,14 @@ public class UnitTests
             {
                 Item = request.Key["PK"].S.StartsWith("AS#") ? [] : []
             }));
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
 
         var request = new DNS.Protocol.Request();
         request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("example.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
@@ -228,7 +265,8 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result = function.FunctionHandler(input, context.Object).Result;
 
@@ -245,11 +283,10 @@ public class UnitTests
     public void FunctionHandlerReturnsResolvedIpsForUnblockedDomains()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BatchGetItemResponse
             {
-                Responses = new() { 
+                Responses = new() {
                     { "test-table", [] }
                 }
             });
@@ -258,6 +295,14 @@ public class UnitTests
             {
                 Item = []
             });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
 
         var request = new DNS.Protocol.Request();
         request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("example.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
@@ -269,7 +314,8 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result = function.FunctionHandler(input, context.Object).Result;
 
@@ -290,7 +336,6 @@ public class UnitTests
     public async Task FunctionHandlerLogsQueriesWhenNotDisabled()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BatchGetItemResponse
             {
@@ -303,6 +348,14 @@ public class UnitTests
             {
                 Item = []
             });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
 
         var loglines = new List<string>();
         firehose.Setup(x => x.PutRecordAsync(It.IsAny<Amazon.KinesisFirehose.Model.PutRecordRequest>(), It.IsAny<CancellationToken>()))
@@ -327,8 +380,9 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
         Environment.SetEnvironmentVariable("LOG_FIREHOSE_STREAM", "test-firehose-stream");
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result = await function.FunctionHandler(input, context.Object);
 
@@ -351,11 +405,10 @@ public class UnitTests
     public void FunctionHandlerDoesNotLogQueriesWhenDisabled()
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BatchGetItemResponse
             {
-                Responses = new() { 
+                Responses = new() {
                     { "test-table", [] }
                 }
             });
@@ -363,6 +416,13 @@ public class UnitTests
             .ReturnsAsync(new GetItemResponse
             {
                 Item = []
+            });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
             });
 
         var loglines = new List<string>();
@@ -381,10 +441,11 @@ public class UnitTests
         };
         var input = new JsonObject { ["Messages"] = requests };
         var context = new Mock<ILambdaContext>();
-        
+
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
         Environment.SetEnvironmentVariable("LOG_FIREHOSE_STREAM", string.Empty);
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result = function.FunctionHandler(input, context.Object).Result;
 
@@ -403,7 +464,6 @@ public class UnitTests
     public void PacketExamples(string base64Packet)
     {
         Mock<IAmazonDynamoDB> ddb = new();
-        Mock<IAmazonKinesisFirehose> firehose = new();
         ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BatchGetItemResponse
             {
@@ -416,6 +476,14 @@ public class UnitTests
             {
                 Item = []
             });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
 
         var loglines = new List<string>();
         firehose.Setup(x => x.PutRecordAsync(It.IsAny<Amazon.KinesisFirehose.Model.PutRecordRequest>(), It.IsAny<CancellationToken>()))
@@ -433,8 +501,9 @@ public class UnitTests
         var context = new Mock<ILambdaContext>();
 
         Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
         Environment.SetEnvironmentVariable("LOG_FIREHOSE_STREAM", string.Empty);
-        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object);
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
 
         var result = function.FunctionHandler(input, context.Object).Result;
 

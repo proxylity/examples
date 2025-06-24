@@ -4,6 +4,13 @@ set -x -e
 # C O N F I G U R A T I O N
 #
 
+# Security first! To restrict use of the UDP and DoH services to a specific set of IP
+# addresses, set the `ALLOWED_IPS` environment variable to the CIDR notation of the
+# allowed IP addresses. The default is to restrict access to the current public IP (
+# probably your internet gateway, so it will only be accessible from your network).
+# To allow open/unrestricted access, set this to 0.0.0.0/0.
+export ALLOWED_IPS="${ALLOWED_IPS:-$(curl -s checkip.amazonaws.com)/32}"
+
 # The regions that will host handlers for the dns-filter example. The global
 # stack will be deployed to us-west-2. 
 export DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"

@@ -7,9 +7,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tests", "tests\tests.csproj
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "dns-filter-lambda", "dns-filter-lambda\dns-filter-lambda.csproj", "{014FF417-5A95-461A-B572-DA7D1880D9F8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "json-adapter-lambda", "json-adapter-lambda\json-adapter-lambda.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "dns-analysis-lambda", "dns-analysis-lambda\dns-analysis-lambda.csproj", "{A4165A5E-FD20-45F4-B719-1E9CD451248B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "dns-asn-data-lambda", "dns-asn-data-lambda\dns-asn-data-lambda.csproj", "{753E66F4-ED5D-4FE2-A558-E2C56B36D05B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "dns-api-adapter-lambda", "dns-api-adapter-lambda\dns-api-adapter-lambda.csproj", "{59E14A95-4EAB-4F7C-81D2-F629877D4F67}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -28,13 +30,17 @@ Global
 		{014FF417-5A95-461A-B572-DA7D1880D9F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{014FF417-5A95-461A-B572-DA7D1880D9F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{014FF417-5A95-461A-B572-DA7D1880D9F8}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.Build.0 = Release|Any CPU
 		{A4165A5E-FD20-45F4-B719-1E9CD451248B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{A4165A5E-FD20-45F4-B719-1E9CD451248B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A4165A5E-FD20-45F4-B719-1E9CD451248B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A4165A5E-FD20-45F4-B719-1E9CD451248B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{753E66F4-ED5D-4FE2-A558-E2C56B36D05B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{753E66F4-ED5D-4FE2-A558-E2C56B36D05B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{753E66F4-ED5D-4FE2-A558-E2C56B36D05B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{753E66F4-ED5D-4FE2-A558-E2C56B36D05B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{59E14A95-4EAB-4F7C-81D2-F629877D4F67}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{59E14A95-4EAB-4F7C-81D2-F629877D4F67}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{59E14A95-4EAB-4F7C-81D2-F629877D4F67}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{59E14A95-4EAB-4F7C-81D2-F629877D4F67}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

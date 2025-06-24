@@ -32,13 +32,13 @@ namespace DnsAnalysisLambda
 
             await Console.Out.WriteLineAsync($"Received event: {input.ToJsonString()}");
 
-            var bucket = input["detail"]?["bucket"]?.ToString() ?? throw new InvalidOperationException("Invalid payload (not from EventBridge?)");
+            var bucket = input["detail"]?["bucket"]?["name"]?.ToString() ?? throw new InvalidOperationException("Invalid payload (not from EventBridge?)");
             var key = input["detail"]?["object"]?["key"]?.ToString() ?? throw new InvalidOperationException("Invalid payload (not from EventBridge?)");
 
             var stream = await s3.GetObjectStreamAsync(bucket, key, null, cts.Token);
-            var deduplicated = DeduplicateDnsLogsByDomain(stream, cts.Token);
+            var grouped = GroupDnsLogsByDomain(stream, cts.Token);
 
-            var baseDomainsToDomains = deduplicated
+            var baseDomainsToDomains = grouped
                 .Select(kv => (parts: DomainUtils.GetDomainParts(kv.Key), queries: kv.Value))
                 .ToLookup(a => a.parts.domain ?? string.Empty, a => (a.parts.subdomain, a.queries))
                 .ToDictionary(g => g.Key, g => g.ToDictionary(b => b.subdomain ?? string.Empty, b => b.queries));
@@ -104,7 +104,7 @@ namespace DnsAnalysisLambda
             }
         }
 
-        private static ConcurrentDictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>> DeduplicateDnsLogsByDomain(Stream stream, CancellationToken token)
+        private static ConcurrentDictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>> GroupDnsLogsByDomain(Stream stream, CancellationToken token)
         {
             // log line example: 2025-06-16T20:43:32.8209308Z example.com\tA\tNoError\tA 600780C6,A 17C0E454,A 17D70088,A 600780AF,A 17D7008A,A 17C0E450
             using var decompress = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);

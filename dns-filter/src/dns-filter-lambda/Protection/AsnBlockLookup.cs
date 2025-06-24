@@ -5,7 +5,7 @@ namespace DnsFilterLambda;
 
 public class AsnBlockLookup(ReadOnlyMemory<byte> data)
 {
-    private const int RecordSize = 37;
+    private const int RecordSize = 40; // need 37, padded to a multiple of 4
 
     public uint? Lookup(IPAddress ip)
     {
@@ -21,8 +21,10 @@ public class AsnBlockLookup(ReadOnlyMemory<byte> data)
             int mid = (low + high) / 2;
             var record = data.Slice(mid * RecordSize, RecordSize).Span;
 
-            var startIp = record.Slice(1, 16);
-            var endIp = record.Slice(17, 16);
+            var _ = record[..4]; // reserved, unused
+            var startIp = record[4..20];
+            var endIp = record[20..36];
+            var asn = record[36..40];
 
             int cmpStart = CompareIp(ipBytes, startIp);
             int cmpEnd = CompareIp(ipBytes, endIp);
@@ -37,8 +39,7 @@ public class AsnBlockLookup(ReadOnlyMemory<byte> data)
             }
             else
             {
-                uint asn = BinaryPrimitives.ReadUInt32BigEndian(record.Slice(33, 4));
-                return asn;
+                return BinaryPrimitives.ReadUInt32BigEndian(asn);
             }
         }
 

@@ -6,15 +6,19 @@ using Amazon.DynamoDBv2.Model;
 using Amazon.KinesisFirehose;
 using System.Net.Sockets;
 using System.Data;
+using Amazon.S3;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
 namespace DnsFilterLambda
 {
-  public class Function(IAmazonDynamoDB ddb, IAmazonKinesisFirehose firehose)
+  public class Function(IAmazonDynamoDB ddb, IAmazonKinesisFirehose firehose, IAmazonS3 s3)
   {
-    public static readonly string TABLE_NAME = Environment.GetEnvironmentVariable("TABLE_NAME") ?? throw new InvalidOperationException($"{nameof(TABLE_NAME)} environment variable is not set");
+    public static readonly string TABLE_NAME = Environment.GetEnvironmentVariable(nameof(TABLE_NAME))
+      ?? throw new InvalidOperationException($"{nameof(TABLE_NAME)} environment variable is not set");
+    public static readonly string BUCKET_NAME = Environment.GetEnvironmentVariable(nameof(BUCKET_NAME))
+      ?? throw new InvalidOperationException($"{nameof(BUCKET_NAME)} environment variable is not set");
 
     public static readonly IPAddress UPSTREAM_DNS = IPAddress.Parse(Environment.GetEnvironmentVariable("UPSTREAM_DNS") ?? "1.0.0.3");
     public static readonly TimeSpan FILTERED_RECORD_TTL = TimeSpan.FromSeconds(300);
@@ -22,10 +26,10 @@ namespace DnsFilterLambda
     readonly string? LOG_FIREHOSE_STREAM = Environment.GetEnvironmentVariable("LOG_FIREHOSE_STREAM");
 
     readonly Dictionary<string, (bool blocked, IPAddress? to, DateTime expires)> _cache = [];
-    readonly AsnLookupService _asnLookup = new(ddb);
+    readonly AsnLookupService _asnLookup = new(s3);
     static readonly DNS.Client.DnsClient _upstreamClient = new(UPSTREAM_DNS);
 
-    public Function() : this(new AmazonDynamoDBClient(), new AmazonKinesisFirehoseClient()) { }
+    public Function() : this(new AmazonDynamoDBClient(), new AmazonKinesisFirehoseClient(), new AmazonS3Client()) { }
 
     public async Task<JsonObject> FunctionHandler(JsonObject input, ILambdaContext context)
     {
@@ -224,8 +228,8 @@ namespace DnsFilterLambda
     static DNS.Protocol.ResourceRecords.ResourceRecord? MakeRedirectRecord(DNS.Protocol.RecordType type, DNS.Protocol.Domain name, IPAddress to) =>
       (type, to.AddressFamily) switch
       {
-        (DNS.Protocol.RecordType.A, AddressFamily.InterNetwork) => new(name, IPAddress.None.GetAddressBytes(), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN, FILTERED_RECORD_TTL),
-        (DNS.Protocol.RecordType.AAAA, AddressFamily.InterNetworkV6) => new(name, IPAddress.IPv6None.GetAddressBytes(), DNS.Protocol.RecordType.AAAA, DNS.Protocol.RecordClass.IN, FILTERED_RECORD_TTL),
+        (DNS.Protocol.RecordType.A, AddressFamily.InterNetwork) => new(name, to.GetAddressBytes(), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN, FILTERED_RECORD_TTL),
+        (DNS.Protocol.RecordType.AAAA, AddressFamily.InterNetworkV6) => new(name, to.GetAddressBytes(), DNS.Protocol.RecordType.AAAA, DNS.Protocol.RecordClass.IN, FILTERED_RECORD_TTL),
         /// MAYBE: double-check that the TO address hasn't been blocked by ASN filtering?
         _ => null
       };

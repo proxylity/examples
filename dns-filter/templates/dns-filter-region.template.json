@@ -22,6 +22,11 @@
       "Description": "Number of days to retain DNS query logs in S3, and other logs in CloudWatch Logs",
       "Type": "Number",
       "Default": 30
+    },
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the DoH API. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
     }
   },
   "Conditions": {
@@ -63,12 +68,11 @@
     }
   },
   "Resources": {
-    "QueryLogBucket": {
+    "RegionDataBucket": {
       "Type": "AWS::S3::Bucket",
-      "Condition": "LogQueries",
       "Properties": {
         "BucketName": {
-          "Fn::Sub": "dns-query-logs-${AWS::AccountId}-${AWS::Region}"
+          "Fn::Sub": "dns-data-${AWS::AccountId}-${AWS::Region}"
         },
         "NotificationConfiguration": {
           "EventBridgeConfiguration": {
@@ -82,7 +86,8 @@
               "Status": "Enabled",
               "ExpirationInDays": {
                 "Ref": "DnsLogRetentionDays"
-              }
+              },
+              "Prefix": "logs/"
             }
           ]
         }
@@ -110,10 +115,10 @@
               ],
               "Resource": [
                 {
-                  "Fn::Sub": "${QueryLogBucket.Arn}"
+                  "Fn::Sub": "${RegionDataBucket.Arn}"
                 },
                 {
-                  "Fn::Sub": "${QueryLogBucket.Arn}/*"
+                  "Fn::Sub": "${RegionDataBucket.Arn}/logs/*"
                 }
               ]
             }
@@ -152,7 +157,7 @@
         "S3DestinationConfiguration": {
           "BucketARN": {
             "Fn::GetAtt": [
-              "QueryLogBucket",
+              "RegionDataBucket",
               "Arn"
             ]
           },
@@ -163,7 +168,7 @@
               "FirehoseRoleArn"
             ]
           },
-          "Prefix": "year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
+          "Prefix": "logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
           "ErrorOutputPrefix": "errors/",
           "BufferingHints": {
             "SizeInMBs": 5,
@@ -235,7 +240,7 @@
                 "s3:GetObject"
               ],
               "Resource": {
-                "Fn::Sub": "${QueryLogBucket.Arn}/*"
+                "Fn::Sub": "${RegionDataBucket.Arn}/*"
               }
             }
           ]
@@ -277,7 +282,7 @@
             "bucket": {
               "name": [
                 {
-                  "Ref": "QueryLogBucket"
+                  "Ref": "RegionDataBucket"
                 }
               ]
             }
@@ -310,6 +315,157 @@
             "AnalysisEventRule",
             "Arn"
           ]
+        }
+      }
+    },
+    "WriteAsnDataS3Policy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "WriteAsnDataS3Policy-${AWS::Region}"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:PutObject"
+              ],
+              "Resource": {
+                "Fn::Sub": "${RegionDataBucket.Arn}/asn-block-data.bin"
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "AsnDataLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ReadAsnDataS3Policy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "WriteAsnDataS3Policy-${AWS::Region}"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:ListBucket"
+              ],
+              "Resource": {
+                "Fn::Sub": "${RegionDataBucket.Arn}"
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject"
+              ],
+              "Resource": {
+                "Fn::Sub": "${RegionDataBucket.Arn}/asn-block-data.bin"
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "AsnDataLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "DnsHandlerLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "DnsAsnDataLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": "dns-asn-data",
+        "Handler": "dns-asn-data-lambda::DnsAsnDataLambda.Function::FunctionHandler",
+        "MemorySize": 1024,
+        "Timeout": 30,
+        "Runtime": "dotnet8",
+        "CodeUri": "../src/dns-asn-data-lambda/",
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "TableName"
+              ]
+            },
+            "BUCKET_NAME": {
+              "Ref": "RegionDataBucket"
+            }
+          }
+        },
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "AsnDataLambdaRoleArn"
+          ]
+        },
+        "Events": {
+          "Hourly": {
+            "Type": "Schedule",
+            "Properties": {
+              "Schedule": "rate(1 hour)",
+              "Input": {
+                "Fn::Sub": "{\"action\": \"update\"}"
+              }
+            }
+          }
         }
       }
     },
@@ -362,6 +518,9 @@
                 "TableName"
               ]
             },
+            "BUCKET_NAME": {
+              "Ref": "RegionDataBucket"
+            },
             "LOG_FIREHOSE_STREAM": {
               "Fn::If": [
                 "LogQueries",
@@ -388,15 +547,15 @@
         }
       }
     },
-    "JsonAdapterForApiLambda": {
+    "DnsApiAdapterLambda": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
-        "FunctionName": "dns-filter-adapter-for-api",
+        "FunctionName": "dns-api-adapter",
         "MemorySize": 1024,
         "Timeout": 30,
         "Runtime": "dotnet8",
-        "CodeUri": "../src/json-adapter-lambda/",
-        "Handler": "json-adapter-lambda::JsonAdapterLambda.Function::FunctionHandler",
+        "CodeUri": "../src/dns-api-adapter-lambda/",
+        "Handler": "dns-api-adapter-lambda::DnsApiAdapterLambda.Function::FunctionHandler",
         "Environment": {
           "Variables": {
             "DNS_FILTER_FUNCTION_NAME": {
@@ -427,12 +586,24 @@
       "Type": "AWS::ApiGateway::RestApi",
       "Properties": {
         "Name": "DoHApi",
+        "Description": "Implements the root page and DoH API for the DNS filtering service",
         "BinaryMediaTypes": [
           "application/dns-message"
         ],
         "EndpointConfiguration": {
           "Types": [
             "REGIONAL"
+          ]
+        },
+        "Policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "execute-api:Invoke",
+              "Resource": "execute-api:/*"
+            }
           ]
         }
       }
@@ -472,7 +643,7 @@
               {
                 "LambdaArn": {
                   "Fn::GetAtt": [
-                    "JsonAdapterForApiLambda",
+                    "DnsApiAdapterLambda",
                     "Arn"
                   ]
                 }
@@ -615,7 +786,7 @@
         "Action": "lambda:InvokeFunction",
         "FunctionName": {
           "Fn::GetAtt": [
-            "JsonAdapterForApiLambda",
+            "DnsApiAdapterLambda",
             "Arn"
           ]
         },
@@ -662,7 +833,8 @@
               "ApiGatewayLogGroup",
               "Arn"
             ]
-          }
+          },
+          "Format": "{ \"requestId\":\"$context.requestId\", \"ip\":\"$context.identity.sourceIp\", \"caller\":\"$context.identity.caller\", \"user\":\"$context.identity.user\", \"requestTime\":\"$context.requestTime\", \"httpMethod\":\"$context.httpMethod\", \"resourcePath\":\"$context.resourcePath\", \"status\":\"$context.status\", \"protocol\":\"$context.protocol\", \"responseLength\":\"$context.responseLength\" }"
         },
         "MethodSettings": [
           {

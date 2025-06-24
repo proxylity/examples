@@ -23,6 +23,8 @@ aws cloudformation deploy \
     --s3-bucket ${DEPLOY_BUCKET_NAME_PREFIX}${AWS_REGION} \
     --s3-prefix ${DEPLOY_BUCKET_PATH_PREFIX}${STACK_NAME} \
     --capabilities CAPABILITY_IAM \
+    --parameter-overrides \
+        ClientCidrToAllow="${ALLOWED_IPS}" \
     --region ${AWS_REGION}
 
 #
@@ -50,6 +52,7 @@ jq "[.Outputs[]|{(.OutputKey):.OutputValue}]|add" ${STACK_NAME}-global.outputs >
 # Next, compile the regional stack template. This will be used to package and deploy
 # the regional stacks, consuming the global stack outputs in `Mappings`.
 sam build \
+    --parallel \
     --template-file ./templates/dns-filter-region.template.json
 
 # Next deploy the app to 
@@ -58,15 +61,12 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
     DEPLOY_BUCKET="${DEPLOY_BUCKET_NAME_PREFIX}${DEPLOY_REGION}"
 
     # prepare parameter overrides
-    PARAMETER_OVERRIDES=""
+    PARAMETER_OVERRIDES="--parameter-overrides ClientCidrToAllow=${ALLOWED_IPS}"
     if [ ! -z "${DOMAIN_NAME}" ]; then
-        PARAMETER_OVERRIDES="DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
+        PARAMETER_OVERRIDES="${PARAMETER_OVERRIDES} DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
     fi
     if [ ! -z "${DNS_LOG_RETENTION}" ]; then
         PARAMETER_OVERRIDES="${PARAMETER_OVERRIDES} DnsLogRetentionDays=${DNS_LOG_RETENTION}"
-    fi
-    if [ ! -z "${PARAMETER_OVERRIDES}" ]; then
-        PARAMETER_OVERRIDES="--parameter-overrides ${PARAMETER_OVERRIDES}"
     fi
 
     # deploy the stack
