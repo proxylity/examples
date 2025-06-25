@@ -47,6 +47,9 @@ public class DomainStateStore : IDomainStateStore
         if (domains == null || domains.Count == 0)
             throw new ArgumentException("Domains cannot be null or empty.", nameof(domains));
 
+        if (domains.Any(d => string.IsNullOrEmpty(d)))
+            throw new ArgumentException("All domains must be non-empty strings.", nameof(domains));
+
         var keys = domains.Select(domain => new Dictionary<string, AttributeValue>
         {
             { "PK", new() { S = domain } },
@@ -101,17 +104,19 @@ public class DomainStateStore : IDomainStateStore
                         { "PK", new(updatedState.Domain) },
                         { "SK", new("STATE") }
                     },
-                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, #ttl = :ttl, Version = Version + :one",
+                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, #ttl = :ttl, #version = if_not_exists(#version,:zero) + :one",
                     ConditionExpression = "attribute_not_exists(PK) OR Version = :expectedVersion",
                     ExpressionAttributeNames = new()
                     {
-                        { "#ttl", "TTL" }
+                        { "#ttl", "TTL" },
+                        { "#version", "Version" }
                     },
                     ExpressionAttributeValues = new()
                     {
                         { ":total", new() { N = updatedState.TotalQueries.ToString() } },
                         { ":nx", new() { N = updatedState.NxDomainCount.ToString() } },
                         { ":hll", new() { B = new MemoryStream(updatedState.UniqueSubdomains.Serialize()) } },
+                        { ":zero", new() { N = "0" } },
                         { ":one", new() { N = "1" } },
                         { ":expectedVersion", new() { N = updatedState.Version.ToString() } },
                         { ":ttl", new() { N = updatedState.Expires.ToUnixTimeSeconds().ToString() } }
@@ -125,7 +130,7 @@ public class DomainStateStore : IDomainStateStore
             {
                 // Concurrent modification detected, refresh state and retry
                 attempt++;
-                await Task.Delay(delay);
+                await Task.Delay(delay, cancellationToken);
                 delay *= 2; // exponential backoff
 
                 var latestState = await GetAsync(updatedState.Domain, cancellationToken) ?? throw new Exception("State unexpectedly missing.");

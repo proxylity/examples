@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\dns-filter-lambda\dns-filter-lambda.csproj" />
+    <ProjectReference Include="..\dns-analysis-lambda\dns-analysis-lambda.csproj" />
   </ItemGroup>
 
 </Project>

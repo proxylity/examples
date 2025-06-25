@@ -20,9 +20,6 @@ namespace DnsAnalysisLambda
         DomainStateStore _store = null!;
         DomainStateStore Store => _store ??= new DomainStateStore(ddb, TABLE_NAME);
 
-        StatefulDnsAnalyzer _analyzer = null!;
-        StatefulDnsAnalyzer Analyzer => _analyzer ??= new StatefulDnsAnalyzer(Store);
-
         public Function() : this(new AmazonDynamoDBClient(), new AmazonS3Client(), new AmazonEventBridgeClient()) { }
 
         // handle eventbridge event that indicates a new DNS log file is available in S3
@@ -43,6 +40,8 @@ namespace DnsAnalysisLambda
                 .ToLookup(a => a.parts.domain ?? string.Empty, a => (a.parts.subdomain, a.queries))
                 .ToDictionary(g => g.Key, g => g.ToDictionary(b => b.subdomain ?? string.Empty, b => b.queries));
 
+            await Console.Out.WriteLineAsync($"Base domains to process: \n{string.Join("\n", baseDomainsToSubdomains.Keys)}");
+
             var baseDomainData = await Store.BatchGetAsync(baseDomainsToSubdomains.Keys, true, cts.Token);
             var baseDomainDataMap = baseDomainData.ToDictionary(d => d!.Domain);
 
@@ -55,16 +54,8 @@ namespace DnsAnalysisLambda
                     Domain = domain
                 };
 
-                foreach (var (subdomain, queries) in subdomains)
-                {
-                    foreach (var (qtype, rcode, timestamp) in queries)
-                    {
-                        state.TotalQueries++;
-                        if (rcode == "NameError")
-                            state.NxDomainCount++;
-                    }
-                    state.UniqueSubdomains.Add(subdomain ?? domain);
-                }
+                var nxcount = subdomains.Sum(s => s.Value.Count(c => c.rcode == "NameError"));
+                DnsQueryAnalyzer.UpdateDomainStateStatistics(state, subdomains.Keys, nxcount);
 
                 state.Version++;
                 state.Expires = DateTime.UtcNow.AddDays(7); // Reset expiry
@@ -81,8 +72,7 @@ namespace DnsAnalysisLambda
         {
             ICollection<string> reasons = [];
             var newlySuspiciousDomains = updatedBaseDomainData
-                .Where(d => !d.IsSuspicious && (StatelessDnsAnalyzer.IsSuspicious(d, out reasons)
-                    || Analyzer.IsSuspicious(d, out reasons)));
+                .Where(d => !d.IsSuspicious && DnsQueryAnalyzer.IsSuspicious(d, out reasons));
             foreach (var domain in newlySuspiciousDomains)
             {
                 domain.IsSuspicious = true;
