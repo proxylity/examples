@@ -24,7 +24,7 @@ public class AsnLookupService(IAmazonS3 s3)
 
     private async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
-        var newBlockData = await LoadBlockDataAsync(cancellationToken);
+        var newBlockData = await LoadAsnLookupDataAsync(cancellationToken);
         var newAsnBlockLookup = new AsnBlockLookup(newBlockData);
         var newAsnCache = new ConcurrentDictionary<IPAddress, uint?>(_asnCache.Where(r => newAsnBlockLookup.Lookup(r.Key) == r.Value));
 
@@ -33,14 +33,14 @@ public class AsnLookupService(IAmazonS3 s3)
         _isInitialized = true;
     }
 
-    private async Task<ReadOnlyMemory<byte>> LoadBlockDataAsync(CancellationToken cancellationToken = default)
+    private async Task<ReadOnlyMemory<byte>> LoadAsnLookupDataAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             var response = await s3.GetObjectAsync(new()
             {
                 BucketName = Function.BUCKET_NAME,
-                Key = "asn-block-data.bin"
+                Key = "asn-from-ip-data.bin"
             }, cancellationToken);
 
             using var stream = response.ResponseStream;

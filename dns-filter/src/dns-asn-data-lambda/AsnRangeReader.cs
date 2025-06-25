@@ -30,7 +30,7 @@ class AsnRangeReader()
                 !uint.TryParse(parts[2], out var asn))
                 continue;
 
-            if (blockedAsns.Contains(asn))
+            if (!blockedAsns.Contains(asn))
                 continue;
 
             var start = IpToBigInteger(startIp);

@@ -38,18 +38,18 @@ namespace DnsAnalysisLambda
             var stream = await s3.GetObjectStreamAsync(bucket, key, null, cts.Token);
             var grouped = GroupDnsLogsByDomain(stream, cts.Token);
 
-            var baseDomainsToDomains = grouped
+            var baseDomainsToSubdomains = grouped
                 .Select(kv => (parts: DomainUtils.GetDomainParts(kv.Key), queries: kv.Value))
                 .ToLookup(a => a.parts.domain ?? string.Empty, a => (a.parts.subdomain, a.queries))
                 .ToDictionary(g => g.Key, g => g.ToDictionary(b => b.subdomain ?? string.Empty, b => b.queries));
 
-            var domainData = await _store.BatchGetAsync(baseDomainsToDomains.Keys, cts.Token);
-            var domainDataMap = domainData.Where(d => d is not null).ToDictionary(d => d!.Domain);
+            var baseDomainData = await Store.BatchGetAsync(baseDomainsToSubdomains.Keys, true, cts.Token);
+            var baseDomainDataMap = baseDomainData.ToDictionary(d => d!.Domain);
 
-            var updatedDomainData = baseDomainsToDomains.Select(kv =>
+            var updatedBaseDomainData = baseDomainsToSubdomains.Select(kv =>
             {
                 var (domain, subdomains) = kv;
-                domainDataMap.TryGetValue(domain, out var state);
+                baseDomainDataMap.TryGetValue(domain, out var state);
                 state ??= new()
                 {
                     Domain = domain
@@ -72,17 +72,17 @@ namespace DnsAnalysisLambda
                 return state;
             }).ToList();
 
-            var notify = NotifyOfNewlySuspiciousDomains(updatedDomainData, cts.Token);
-            var updateTasks = updatedDomainData.Select(state => _store.UpdateAsync(state, cts.Token));
+            var notify = NotifyOfNewlySuspiciousDomains(updatedBaseDomainData, cts.Token);
+            var updateTasks = updatedBaseDomainData.Select(state => Store.UpdateAsync(state, cts.Token));
             await Task.WhenAll([notify, ..updateTasks]);
         }
 
-        private async Task NotifyOfNewlySuspiciousDomains(List<DomainState> updatedDomainData, CancellationToken cancellationToken = default)
+        private async Task NotifyOfNewlySuspiciousDomains(List<DomainState> updatedBaseDomainData, CancellationToken cancellationToken = default)
         {
             ICollection<string> reasons = [];
-            var newlySuspiciousDomains = updatedDomainData
+            var newlySuspiciousDomains = updatedBaseDomainData
                 .Where(d => !d.IsSuspicious && (StatelessDnsAnalyzer.IsSuspicious(d, out reasons)
-                    || _analyzer.IsSuspicious(d, out reasons)));
+                    || Analyzer.IsSuspicious(d, out reasons)));
             foreach (var domain in newlySuspiciousDomains)
             {
                 domain.IsSuspicious = true;
@@ -95,7 +95,12 @@ namespace DnsAnalysisLambda
                         new()
                         {
                             DetailType = "suspicious-domain",
-                            Detail = System.Text.Json.JsonSerializer.Serialize(new { domain.Domain, domain.TotalQueries, domain.NxDomainCount, Reasons = reasons }),
+                            Detail = System.Text.Json.JsonSerializer.Serialize(new {
+                                domain.Domain,
+                                domain.TotalQueries,
+                                domain.NxDomainCount,
+                                Reasons = reasons
+                            }),
                             Source = "dns-filter",
                             EventBusName = EVENT_BUS_NAME,
                         }
@@ -104,13 +109,13 @@ namespace DnsAnalysisLambda
             }
         }
 
-        private static ConcurrentDictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>> GroupDnsLogsByDomain(Stream stream, CancellationToken token)
+        private static Dictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>> GroupDnsLogsByDomain(Stream stream, CancellationToken token)
         {
             // log line example: 2025-06-16T20:43:32.8209308Z example.com\tA\tNoError\tA 600780C6,A 17C0E454,A 17D70088,A 600780AF,A 17D7008A,A 17C0E450
             using var decompress = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);
             using var reader = new StreamReader(decompress);
 
-            var seen = new ConcurrentDictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>>();
+            var seen = new Dictionary<string, HashSet<(string qtype, string rcode, DateTime timestamp)>>();
             while (reader.ReadLine() is string line)
             {
                 token.ThrowIfCancellationRequested();
@@ -124,7 +129,10 @@ namespace DnsAnalysisLambda
                 var qtype = parts[2];
                 var rcode = parts[3];
                 var answers = parts[4];
-                seen.AddOrUpdate(fqdn, _ => [ (qtype, rcode, timestamp) ], (_, set) => { set.Add((qtype, rcode, timestamp)); return set; });
+
+                var set = seen.TryGetValue(fqdn, out var s) ? s : [];
+                set.Add((qtype, rcode, timestamp));
+                seen[fqdn] = set;
             }
             return seen;
         }

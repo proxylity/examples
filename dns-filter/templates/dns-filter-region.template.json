@@ -322,7 +322,7 @@
       "Type": "AWS::IAM::Policy",
       "Properties": {
         "PolicyName": {
-          "Fn::Sub": "WriteAsnDataS3Policy-${AWS::Region}"
+          "Fn::Sub": "WriteAsnDataS3Policy1-${AWS::Region}"
         },
         "PolicyDocument": {
           "Version": "2012-10-17",
@@ -330,10 +330,19 @@
             {
               "Effect": "Allow",
               "Action": [
+                "s3:ListBucket"
+              ],
+              "Resource": {
+                "Fn::Sub": "${RegionDataBucket.Arn}"
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
                 "s3:PutObject"
               ],
               "Resource": {
-                "Fn::Sub": "${RegionDataBucket.Arn}/asn-block-data.bin"
+                "Fn::Sub": "${RegionDataBucket.Arn}/asn-from-ip-data.bin"
               }
             }
           ]
@@ -363,7 +372,7 @@
       "Type": "AWS::IAM::Policy",
       "Properties": {
         "PolicyName": {
-          "Fn::Sub": "WriteAsnDataS3Policy-${AWS::Region}"
+          "Fn::Sub": "ReadAsnDataS3Policy1-${AWS::Region}"
         },
         "PolicyDocument": {
           "Version": "2012-10-17",
@@ -383,7 +392,7 @@
                 "s3:GetObject"
               ],
               "Resource": {
-                "Fn::Sub": "${RegionDataBucket.Arn}/asn-block-data.bin"
+                "Fn::Sub": "${RegionDataBucket.Arn}/asn-from-ip-data.bin"
               }
             }
           ]
@@ -603,6 +612,18 @@
               "Principal": "*",
               "Action": "execute-api:Invoke",
               "Resource": "execute-api:/*"
+            },
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "execute-api:Invoke",
+              "Condition": {
+                "NotIpAddress": {
+                  "aws:SourceIp": {
+                    "Ref": "ClientCidrToAllow"
+                  }
+                }
+              }
             }
           ]
         }
@@ -805,7 +826,7 @@
         "RetentionInDays": 7
       }
     },
-    "DnsApiDeployment1": {
+    "DnsApiDeployment0": {
       "Type": "AWS::ApiGateway::Deployment",
       "DependsOn": [
         "DnsApiDohMethods",
@@ -824,7 +845,7 @@
           "Ref": "DnsApi"
         },
         "DeploymentId": {
-          "Ref": "DnsApiDeployment1"
+          "Ref": "DnsApiDeployment0"
         },
         "StageName": "v0",
         "AccessLogSetting": {

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 
@@ -37,19 +38,19 @@ public class DomainStateStore : IDomainStateStore
             Version = long.Parse(response.Item["Version"].N),
             UniqueSubdomains = DeserializeHll(response.Item["HllState"].B.ToArray()),
             Expires = response.Item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime 
-                : DateTimeOffset.UtcNow.AddDays(1) // Default to 1 day if no expiry set
+                : DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
         };
     }
 
-    public async Task<DomainState?[]> BatchGetAsync(ICollection<string> domains, CancellationToken cancellationToken = default)
+    public async Task<DomainState?[]> BatchGetAsync(ICollection<string> domains, bool fillMissing = true, CancellationToken cancellationToken = default)
     {
         if (domains == null || domains.Count == 0)
             throw new ArgumentException("Domains cannot be null or empty.", nameof(domains));
 
         var keys = domains.Select(domain => new Dictionary<string, AttributeValue>
         {
-            { "PK", new AttributeValue { S = domain } },
-            { "SK", new AttributeValue { S = "STATE" } }
+            { "PK", new() { S = domain } },
+            { "SK", new() { S = "STATE" } }
         }).ToList();
 
         var request = new BatchGetItemRequest
@@ -63,16 +64,24 @@ public class DomainStateStore : IDomainStateStore
         var response = await _dynamoDb.BatchGetItemAsync(request, cancellationToken);
         var items = response.Responses.GetValueOrDefault(_tableName, []);
 
-        return [.. items.Select(item => new DomainState
-        {
-            Domain = item["PK"].S,
-            TotalQueries = int.Parse(item["TotalQueries"].N),
-            NxDomainCount = int.Parse(item["NxDomainCount"].N),
-            Version = long.Parse(item["Version"].N),
-            UniqueSubdomains = DeserializeHll(item["HllState"].B.ToArray()),
-            Expires = item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime 
-                : DateTimeOffset.UtcNow.AddDays(1) // Default to 1 day if no expiry set
-        })];
+        return [.. items.Select((item, index) => item.Count > 0 ? new DomainState
+            {
+                Domain = item["PK"].S,
+                TotalQueries = int.Parse(item["TotalQueries"].N),
+                NxDomainCount = int.Parse(item["NxDomainCount"].N),
+                Version = long.Parse(item["Version"].N),
+                UniqueSubdomains = DeserializeHll(item["HllState"].B.ToArray()),
+                Expires = item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime 
+                    : DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
+            } : fillMissing ? new() {
+                Domain = domains.ElementAt(index),
+                TotalQueries = 0,
+                NxDomainCount = 0,
+                Version = 0,
+                UniqueSubdomains = new HyperLogLogEstimator(),
+                Expires = DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
+            } : null
+        )];
     }
 
     public async Task UpdateAsync(DomainState updatedState, CancellationToken cancellationToken = default)
@@ -92,8 +101,12 @@ public class DomainStateStore : IDomainStateStore
                         { "PK", new(updatedState.Domain) },
                         { "SK", new("STATE") }
                     },
-                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, TTL = :ttl, Version = Version + :one",
-                    ConditionExpression = "Version = :expectedVersion",
+                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, #ttl = :ttl, Version = Version + :one",
+                    ConditionExpression = "attribute_not_exists(PK) OR Version = :expectedVersion",
+                    ExpressionAttributeNames = new()
+                    {
+                        { "#ttl", "TTL" }
+                    },
                     ExpressionAttributeValues = new()
                     {
                         { ":total", new() { N = updatedState.TotalQueries.ToString() } },

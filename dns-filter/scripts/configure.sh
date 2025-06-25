@@ -1,6 +1,21 @@
 set -x -e
 
 #
+# R E G I O N S
+#
+
+# The regions that will host handlers for the dns-filter example. The AWS_REGION
+# environment variable is used to deploy the global stack, and the DEPLOY_TO_REGIONS
+# environment variable is used to deploy the regional stacks. The value of AWS_REGION
+# must be one of the regions in DEPLOY_TO_REGIONS. 
+# 
+# NOTE: Editing the regions here will not change the regions in the global stack template.
+# You will need to edit the `dns-filter-global.template.json` file to change the regions
+# in which the DDB global table is replicated to match.
+export DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
+
+
+#
 # C O N F I G U R A T I O N
 #
 
@@ -11,13 +26,10 @@ set -x -e
 # To allow open/unrestricted access, set this to 0.0.0.0/0.
 export ALLOWED_IPS="${ALLOWED_IPS:-$(curl -s checkip.amazonaws.com)/32}"
 
-# The regions that will host handlers for the dns-filter example. The global
-# stack will be deployed to us-west-2. 
-export DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
-
 # The prefix of the bucket name to use for deployment artifacts. This will be suffixed
 # with the region name, and a bucket with the resuling name must exist in each deployment
-# region (due to the way CloudFormation/SAM works).   
+# region (due to the way CloudFormation/SAM works). You can run `scripts/prerequisites.sh`
+# to find or create a set of buckets with the correct prefix in each region.
 export DEPLOY_BUCKET_NAME_PREFIX="cpdev-"
 
 # The S3 path prefix to use for deployment artifacts. The `cloudformation deploy` and

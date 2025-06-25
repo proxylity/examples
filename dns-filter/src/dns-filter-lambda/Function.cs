@@ -274,15 +274,17 @@ namespace DnsFilterLambda
     {
       var batchRequest = new BatchGetItemRequest
       {
-        RequestItems = new Dictionary<string, KeysAndAttributes>
+        RequestItems = new()
         {
-          [TABLE_NAME] = new KeysAndAttributes
+          [TABLE_NAME] = new()
           {
-            Keys = [.. roots.Select(r => new Dictionary<string, AttributeValue>
-                    {
-                        { "PK", new AttributeValue { S = r } },
-                        { "SK", new AttributeValue { S = r } }
-                    })]
+            Keys = [
+              ..roots.Select(r => new Dictionary<string, AttributeValue>
+                {
+                    { "PK", new() { S = r } },
+                    { "SK", new() { S = r } }
+                })
+              ]
           }
         }
       };
@@ -316,8 +318,7 @@ namespace DnsFilterLambda
       if (asn is null) return (false, null);
 
       var (good, blocked, to) = _cache.TryGetValue($"AS#{asn}", out var v) && now < v.expires ?
-        (true, v.blocked, v.to)
-        : (false, false, (IPAddress?)null);
+        (true, v.blocked, v.to) : (false, false, null);
 
       return good ? (blocked, to) : await RefreshAsnCache(asn.Value);
     }
@@ -327,10 +328,10 @@ namespace DnsFilterLambda
       var request = new GetItemRequest
       {
         TableName = TABLE_NAME,
-        Key = new Dictionary<string, AttributeValue>
+        Key = new()
         {
-          { "PK", new AttributeValue { S = $"AS#{asn}" } },
-          { "SK", new AttributeValue { S = $"AS#{asn}" } }
+          { "PK", new() { S = $"AS#{asn}" } },
+          { "SK", new() { S = $"AS#{asn}" } }
         }
       };
       var response = await ddb.GetItemAsync(request);

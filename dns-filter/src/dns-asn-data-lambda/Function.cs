@@ -32,7 +32,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonS3 s3, HttpClient http)
         var response = await s3.PutObjectAsync(new()
         {
             BucketName = BUCKET_NAME,
-            Key = "asn-block-data.bin",
+            Key = "asn-from-ip-data.bin",
             InputStream = new MemoryStream(asnData.ToArray()),
             ContentType = "application/octet-stream"
         }, cts.Token);
@@ -47,7 +47,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonS3 s3, HttpClient http)
         {
             TableName = Function.TABLE_NAME,
             IndexName = "GSI1",
-            KeyConditionExpression = "PK = :pk",
+            KeyConditionExpression = "GSI1PK = :pk",
             ExpressionAttributeValues = new()
             {
                 [":pk"] = new() { S = "BLOCKED_ASNS" }
