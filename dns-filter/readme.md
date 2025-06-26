@@ -90,28 +90,37 @@ event-bridge-->dns-asn-sync-lambda--->dynamodb-table
 
 > **NOTE**: The instructions below assume the `aws` CLI, `jq` and [`dnsstress`](https://mickaelbergem.github.io/dnsstresss/) are available on your Linux system (WSL 2 works fine). 
 
-### Configuration
-Deployment easy using the provided bash scripts, but before using them you'll need to make some changes to it to match your AWS account environment.
+### Clone this repo
 
-Open the file `scripts/configure.sh` and make the following edits in the `CONFIGURATION` section:
+To get started, first clone the repo to your local system:
+
+```bash
+git clone https://github.com/proxylity/examples && cd ./examples/dns-filter
+```
+
+### Configuration
+Deployment can be done via the provided bash scripts, but before using them you'll need to make some changes to it to match your AWS account environment.
+
+Open the file `scripts/configure.sh` and make the following **required** edits in the `CONFIGURATION` section:
 
 * Change `DEPLOY_BUCKET_NAME_PREFIX` to match the prefix of buckets in your account. In each region in `DEPLOY_TO_REGIONS`, a bucket with the name `${DEPLOY_BUCKET_NAME_PREFIX}-${REGION}` must exist. Those buckets will be used to hold deployment artifacts (templates and the compiled lambda function archive). The script `scripts/prerequisites.sh` will help you identify any existing buckets that fit the bill, or to create new ones if none exist.
 
-Additionally, the following optional changes may also be made:
+Additionally, the following **optional** changes may also be made:
 
+* If you want to use DoH, you'll need a domain registered in Route53 and the hosted zone ID. Uncomment the lines in `configure.h` to define `DOMAIN_NAME` and `HOSTED_ZONE_ID`.
 * Optionally, change `DEPLOY_BUCKET_PATH_PREFIX` to change the location of the uploaded deployment artifacts.
 * Optionally, change `STACK_NAME` to specify the name of the regional stacks (they will have the same name in each region). Note that the global stack will be created with the name `${STACK_NAME}-global`.
 * Optionally, change `DNS_LOG_RETENTION` to specify the number of days DNS query logs should be retained.  Setting this variable to `0` will disable query logging entirely.
 
 ### Deployment
 
-Once those changes are made, make sure the `AWS_REGION` variable is set and names the region where you'd like the global template to be created. Then, from the `examples/dns-folder` run the deploy script: 
+Once those changes are made, make sure the `AWS_REGION` variable is set to `us-west-2` (or one of the other regions in `DEPLOY_TO_REGIONS`). Then, from the `examples/dns-folder` run the deploy script: 
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-For example, if you have a Route53 hosted zone for the base domain `yourdomain.tld` and want to use a custom dowmain name for the DoH endpoint with a subdomain called `doh`, the values can be supplied directly to the script:
+You can also provide the environment variable defintions directly to the script in the command line. For example, if you have a Route53 hosted zone for the base domain `yourdomain.tld` and want to use a custom dowmain name for the DoH endpoint with a subdomain called `doh`, and change the log retention to 7 days, those values can be supplied directly as:
 
 ```bash
 AWS_REGION=us-west-2 DOMAIN_NAME=doh.yourbasedomain.tld HOSTED_ZONE_ID=<your_hosted_zone_id> DNS_LOG_RETENTION=7 ./scripts/deploy.sh 
@@ -127,6 +136,8 @@ export DNS_PORT=$(jq -r .Port global-stack-outputs.json)
 export DNS_ENDPOINT=$(jq -r .Endpoint global-stack-outputs.json)
 export DNS_TABLE=$(jq -r .TableName global-stack-outputs.json)
 ```
+
+The DoH endpoint, if created, will depend on the domain name you provided and follow the pattern `https://doh.{your domain}/dns-query`.
 
 ## Testing
 

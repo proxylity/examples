@@ -39,10 +39,24 @@ public static class DnsQueryAnalyzer
         reasons = [];
         if (HasHighNxDomainRatio(state)) reasons.Add("High NXDOMAIN ratio");
         if (HasHighUniqueSubdomains(state)) reasons.Add("High unique subdomains");
-        if (HasLongLabel(state.Domain)) reasons.Add("Has long label");
-        if (HasTooManyLabels(state.Domain)) reasons.Add("Has too many labels");
-        if (HasHighShannonEntropy(state.Domain)) reasons.Add("Has high Shannon entropy");
+        if (HasLongLabels(state)) reasons.Add("Has long labels");
+        if (HasTooManyLabels(state)) reasons.Add("Has too many labels");
+        if (HasHighShannonEntropy(state)) reasons.Add("Has high Shannon entropy");
+        if (HasHighOverallJankiness(state)) reasons.Add("High overall jankiness");
         return reasons.Count > 0;
+    }
+
+    private static bool HasHighOverallJankiness(DomainState state)
+    {
+        // calculate an overall risk scope based on the various metrics even if they
+        // don't individually trigger a suspicious flag
+        double riskScore = 0.0;
+        if (HasHighNxDomainRatio(state, 0.1)) riskScore += 0.2; // moderate threshold
+        if (HasHighUniqueSubdomains(state, 1000)) riskScore += 0.2; // moderate threshold
+        if (HasLongLabels(state, 60, 40)) riskScore += 0.2; // moderate threshold
+        if (HasTooManyLabels(state, 12, 10)) riskScore += 0.2; // moderate threshold
+        if (HasHighShannonEntropy(state, 5.0, 4.5)) riskScore += 0.2; // moderate threshold
+        return riskScore >= 0.6; // if we hit 60% of the risk score, consider it suspicious
     }
 
     public static bool HasHighNxDomainRatio(DomainState state, double threshold = 0.25)
@@ -51,26 +65,24 @@ public static class DnsQueryAnalyzer
         return (double)state.NxDomainCount / state.TotalQueries >= threshold;
     }
 
-    public static bool HasHighUniqueSubdomains(DomainState state, double threshold = 1000)
+    public static bool HasHighUniqueSubdomains(DomainState state, double threshold = 2000)
     {
         return state.UniqueSubdomains.Estimate() >= threshold;
     }
 
-    public static bool HasLongLabel(string domain, int maxLabelLength = 54)
+    public static bool HasLongLabels(DomainState state, int maxMaxLabelLength = 54, int maxAvgLabelLength = 32)
     {
-        return domain.Split('.').Any(label => label.Length > maxLabelLength);
+        return state.MaxLength > maxMaxLabelLength || state.AvgLength > maxAvgLabelLength;
     }
 
-    public static bool HasTooManyLabels(string domain, int maxLabels = 10)
+    public static bool HasTooManyLabels(DomainState state, int maxMaxLabels = 10, int maxAvgLabels = 8)
     {
-        return domain.Split('.').Length > maxLabels;
+        return state.MaxLabelCount > maxMaxLabels || state.AvgLabelCount > maxAvgLabels;
     }
 
-    public static bool HasHighShannonEntropy(string domain, double maxEntropy = 4.2)
+    public static bool HasHighShannonEntropy(DomainState state, double maxMaxEntropy = 4.7, double maxAvgEntropy = 4.2)
     {
-        if (string.IsNullOrEmpty(domain)) return false;
-
-        return _entropyCache.GetOrAdd(domain, ComputeEntropy) > maxEntropy;
+        return state.AvgEntropy >= maxAvgEntropy || state.MaxEntropy >= maxMaxEntropy;
     }
 
     private static double ComputeEntropy(string input)

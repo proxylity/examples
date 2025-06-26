@@ -6,18 +6,25 @@ namespace DnsFilterLambda;
 
 public static class DomainUtils
 {
-    private static readonly DomainParser _parser = new(new CachedHttpRuleProvider(new LocalFileSystemCacheProvider(), new HttpClient()));
+    const string PUBLIC_SUFFIX_FILE_PATH = "public_suffix_list.dat";
+    private static readonly IRuleProvider _provider = new LocalFileRuleProvider(PUBLIC_SUFFIX_FILE_PATH);
+    private static readonly DomainParser _parser = new(_provider);
 
-    public static (string? domain, string? subdomain) GetDomainParts(string fqdn)
+    public static (string? baseDomain, string? subdomain) GetDomainParts(string fqdn)
     {
         try
         {
+            if (_provider.GetDomainDataStructure() == null)
+            {
+                _provider.BuildAsync().GetAwaiter().GetResult();
+            }
             var info = _parser.Parse(fqdn);
-            return (info?.RegistrableDomain, info?.Subdomain);
+            return (info!.RegistrableDomain, info.Subdomain ?? string.Empty);
         }
-        catch
+        catch (Exception e)
         {
-            return (fqdn, null); // fallback to full domain
+            Console.Error.WriteLine($"Failed to parse FQDN {fqdn}: {e.Message}");
+            return (fqdn, string.Empty); // fallback to full domain
         }
     }
 }

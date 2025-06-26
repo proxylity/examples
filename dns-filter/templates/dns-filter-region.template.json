@@ -285,6 +285,13 @@
                   "Ref": "RegionDataBucket"
                 }
               ]
+            },
+            "object": {
+              "key": [
+                {
+                  "prefix": "logs/*"
+                }
+              ]
             }
           }
         },

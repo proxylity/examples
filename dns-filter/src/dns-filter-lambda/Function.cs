@@ -240,9 +240,14 @@ namespace DnsFilterLambda
       {
         return await _upstreamClient.Resolve(question.Name.ToString(), question.Type);
       }
+      catch (DNS.Client.ResponseException ex)
+      {
+        Console.WriteLine($"Upstream DNS Error resolving {question.Name}: {ex.Message}");
+        return ex.Response;
+      }
       catch (Exception ex)
       {
-        Console.WriteLine($"Error resolving {question.Name}: {ex.Message}");
+        Console.WriteLine($"Unexpected error resolving {question.Name}: {ex.Message}");
         return null;
       }
     }

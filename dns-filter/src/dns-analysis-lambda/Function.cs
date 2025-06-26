@@ -37,35 +37,50 @@ namespace DnsAnalysisLambda
 
             var baseDomainsToSubdomains = grouped
                 .Select(kv => (parts: DomainUtils.GetDomainParts(kv.Key), queries: kv.Value))
-                .ToLookup(a => a.parts.domain ?? string.Empty, a => (a.parts.subdomain, a.queries))
+                .ToLookup(a => a.parts.baseDomain ?? string.Empty, a => (a.parts.subdomain, a.queries))
                 .ToDictionary(g => g.Key, g => g.ToDictionary(b => b.subdomain ?? string.Empty, b => b.queries));
 
             await Console.Out.WriteLineAsync($"Base domains to process: \n{string.Join("\n", baseDomainsToSubdomains.Keys)}");
 
-            var baseDomainData = await Store.BatchGetAsync(baseDomainsToSubdomains.Keys, true, cts.Token);
-            var baseDomainDataMap = baseDomainData.ToDictionary(d => d!.Domain);
-
-            var updatedBaseDomainData = baseDomainsToSubdomains.Select(kv =>
+            var attempts = 0;
+            var delay = 200;
+            while (attempts < 3)
             {
-                var (domain, subdomains) = kv;
-                baseDomainDataMap.TryGetValue(domain, out var state);
-                state ??= new()
+                try
                 {
-                    Domain = domain
-                };
+                    var baseDomainData = await Store.BatchGetAsync(baseDomainsToSubdomains.Keys, true, cts.Token);
+                    var baseDomainDataMap = baseDomainData.ToDictionary(d => d!.Domain);
 
-                var nxcount = subdomains.Sum(s => s.Value.Count(c => c.rcode == "NameError"));
-                DnsQueryAnalyzer.UpdateDomainStateStatistics(state, subdomains.Keys, nxcount);
+                    var updatedBaseDomainData = baseDomainsToSubdomains.Select(kv =>
+                    {
+                        var (domain, queries) = kv;
+                        baseDomainDataMap.TryGetValue(domain, out var state);
+                        state ??= new() { Domain = domain };
 
-                state.Version++;
-                state.Expires = DateTime.UtcNow.AddDays(7); // Reset expiry
+                        var nxcount = queries.Sum(s => s.Value.Count(c => c.rcode == "NameError"));
+                        DnsQueryAnalyzer.UpdateDomainStateStatistics(state!, queries.Keys, nxcount);
 
-                return state;
-            }).ToList();
+                        state.Expires = DateTime.UtcNow.AddDays(7); // Reset expiry
 
-            var notify = NotifyOfNewlySuspiciousDomains(updatedBaseDomainData, cts.Token);
-            var updateTasks = updatedBaseDomainData.Select(state => Store.UpdateAsync(state, cts.Token));
-            await Task.WhenAll([notify, ..updateTasks]);
+                        return state;
+                    }).ToList();
+
+                    await NotifyOfNewlySuspiciousDomains(updatedBaseDomainData, cts.Token); // mark newly suspicious domains and notify
+                    await Store.BatchUpdateAsync(updatedBaseDomainData, cts.Token);
+
+                    return; // exit on success
+                }
+                catch (Exception e)
+                {
+                    attempts++;
+                    await Console.Error.WriteLineAsync($"Attempt {attempts} failed: {e.Message}. Retrying...");
+                    await Task.Delay(TimeSpan.FromMilliseconds(delay + Random.Shared.Next(0, delay)), cts.Token); // wait before retrying
+                    delay *= 2;
+                }
+            }
+
+            await Console.Error.WriteLineAsync($"Failed to process DNS logs after {attempts}.");
+            throw new Exception("Failed to process DNS log batch.");
         }
 
         private async Task NotifyOfNewlySuspiciousDomains(List<DomainState> updatedBaseDomainData, CancellationToken cancellationToken = default)
@@ -110,12 +125,14 @@ namespace DnsAnalysisLambda
             {
                 token.ThrowIfCancellationRequested();
 
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
                 var parts = line.Split('\t', 5);
 
                 if (parts.Length != 5) continue;
                 if (!DateTime.TryParse(parts[0], out var timestamp)) continue;
 
-                var fqdn = parts[1];
+                var fqdn = parts[1]; // TODO: is missing somtimes, perhaps bogus requests?                
                 var qtype = parts[2];
                 var rcode = parts[3];
                 var answers = parts[4];

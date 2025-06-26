@@ -137,7 +137,7 @@ public class UnitTests
             {
                 ResponseStream = new MemoryStream()
             });
-        
+
 
         var request = new DNS.Protocol.Request();
         request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("example.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
@@ -333,6 +333,54 @@ public class UnitTests
     }
 
     [Fact]
+    public void FunctionHandlerReturnsNxDomainForBogusDomains()
+    {
+        Mock<IAmazonDynamoDB> ddb = new();
+        ddb.Setup(x => x.BatchGetItemAsync(It.IsAny<BatchGetItemRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BatchGetItemResponse
+            {
+                Responses = new() {
+                    { "test-table", [] }
+                }
+            });
+        ddb.Setup(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetItemResponse
+            {
+                Item = []
+            });
+        Mock<IAmazonKinesisFirehose> firehose = new();
+        Mock<IAmazonS3> s3 = new();
+        s3.Setup(x => x.GetObjectAsync(It.IsAny<GetObjectRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetObjectResponse
+            {
+                ResponseStream = new MemoryStream()
+            });
+
+
+        var request = new DNS.Protocol.Request();
+        request.Questions.Add(new DNS.Protocol.Question(DNS.Protocol.Domain.FromString("not-a-read-domain-asdasdasd.com"), DNS.Protocol.RecordType.A, DNS.Protocol.RecordClass.IN));
+        var requests = new JsonArray
+        {
+            new JsonObject { ["Tag"] = "tag1", ["Data"] = Convert.ToBase64String(request.ToArray()) },
+        };
+        var input = new JsonObject { ["Messages"] = requests };
+        var context = new Mock<ILambdaContext>();
+
+        Environment.SetEnvironmentVariable("TABLE_NAME", "test-table");
+        Environment.SetEnvironmentVariable("BUCKET_NAME", "test-bucket");
+        var function = new DnsFilterLambda.Function(ddb.Object, firehose.Object, s3.Object);
+
+        var result = function.FunctionHandler(input, context.Object).Result;
+
+        var replies = (JsonArray)result["Replies"]!;
+        var reply_data = Convert.FromBase64String(replies[0]!["Data"]!.ToString()!);
+        var response = DNS.Protocol.Response.FromArray(reply_data);
+
+        Assert.Equal(DNS.Protocol.ResponseCode.NameError, response.ResponseCode);
+        Assert.Empty(response.AnswerRecords);
+    }
+
+    [Fact]
     public async Task FunctionHandlerLogsQueriesWhenNotDisabled()
     {
         Mock<IAmazonDynamoDB> ddb = new();
@@ -513,5 +561,80 @@ public class UnitTests
 
         Assert.NotEmpty(response.AnswerRecords);
         Assert.Empty(loglines);
+    }
+
+    [Fact]
+    public void DomainUtilsProperlySplitsDomainParts()
+    {
+        var samples = new[] { new[]
+            { "github.com", "" },
+            ["secure.devpost.com", "secure"],
+            ["github.githubassets.com", "github"],
+            ["safebrowsing.google.com", "safebrowsing"],
+            ["avatars.githubusercontent.com", ""],
+            ["user-images.githubusercontent.com", ""],
+            ["github-cloud.s3.amazonaws.com", ""],
+            ["content-autofill.googleapis.com", ""],
+            ["collector.github.com", "collector"],
+            ["api.github.com", "api"],
+            ["us-west-2.prod.pr.panorama.console.api.aws", "us-west-2.prod.pr.panorama.console"],
+            ["us-west-2.console.aws.amazon.com", "us-west-2.console.aws"],
+            ["cloudshell.us-west-2.amazonaws.com", "cloudshell.us-west-2"],
+            ["cell-0.us-west-2.prod.telemetry.console.api.aws", "cell-0.us-west-2.prod.telemetry.console"],
+            ["www.google.com", "www"],
+            ["appsitemsuggest-pa.googleapis.com", ""],
+            ["www.googleapis.com", ""],
+            ["lh3.google.com", "lh3"],
+            ["ogads-pa.clients6.google.com", "ogads-pa.clients6"],
+            ["lh3.googleusercontent.com", "lh3"],
+            ["drive-thirdparty.googleusercontent.com", "drive-thirdparty"],
+            ["play.google.com", "play"],
+            ["www.gstatic.com", "www"],
+            ["tunnel.googlezip.net", "tunnel"],
+            ["accounts.google.com", "accounts"],
+            ["serverfault.com", ""],
+            ["cdn.sstatic.net", "cdn"],
+            ["ajax.googleapis.com", ""],
+            ["cdn.cookielaw.org", "cdn"],
+            ["www.googletagmanager.com", "www"],
+            ["www.gravatar.com", "www"],
+            ["i.sstatic.net", "i"],
+            ["geolocation.onetrust.com", "geolocation"],
+            ["qa.sockets.stackexchange.com", "qa.sockets"],
+            ["www.google-analytics.com", "www"],
+            ["google.com", ""],
+            ["fonts.gstatic.com", "fonts"],
+            ["docs.aws.amazon.com", "docs.aws"],
+            ["a.b.cdn.console.awsstatic.com", "a.b.cdn.console"],
+            ["prod.pa.cdn.uis.awsstatic.com", "prod.pa.cdn.uis"],
+            ["us-east-1.prod.pr.panorama.console.api.aws", "us-east-1.prod.pr.panorama.console"],
+            ["prod.log.shortbread.aws.dev", "prod.log.shortbread"],
+            ["contentrecs-api.docs.aws.amazon.com", "contentrecs-api.docs.aws"],
+            ["d2c.aws.amazon.com", "d2c.aws"],
+            ["a0.awsstatic.com", "a0"],
+            ["vs.aws.amazon.com", "vs.aws"],
+            ["public.lotus.awt.aws.a2z.com", "public.lotus.awt.aws"],
+            ["prod.us-west-2.tcx-beacon.docs.aws.dev", "prod.us-west-2.tcx-beacon.docs"],
+            ["amazonwebservices.d2.sc.omtrdc.net", "amazonwebservices.d2.sc"],
+            ["aws.amazon.com", "aws"],
+            ["xcxrmtkxx5.execute-api.us-east-1.amazonaws.com", ""]
+        };
+
+        foreach (var sample in samples)
+        {
+            var (baseDomain, subDomain) = DnsFilterLambda.DomainUtils.GetDomainParts(sample[0]);
+
+            Console.WriteLine($"Domain: {sample}, Base: {baseDomain}, Sub: {subDomain}");
+
+            Assert.NotNull(baseDomain);
+            Assert.NotEmpty(baseDomain);
+            Assert.True(baseDomain.Length <= sample[0].Length);
+            Assert.Equal(sample[1], subDomain);
+
+            if (!string.IsNullOrEmpty(subDomain))
+            {
+                Assert.True(baseDomain.Length + subDomain.Length + 1 == sample[0].Length);
+            }
+        }
     }
 }
