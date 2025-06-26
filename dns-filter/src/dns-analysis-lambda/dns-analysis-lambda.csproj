@@ -5,10 +5,11 @@
     <Nullable>enable</Nullable>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <AWSProjectType>Lambda</AWSProjectType>
-    <!-- This property makes the build directory similar to a publish directory and helps the AWS .NET Lambda Mock Test Tool find project dependencies. -->
+    <!-- This property makes the build directory similar to a publish directory and helps the AWS
+    .NET Lambda Mock Test Tool find project dependencies. -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <!-- Generate ready to run images during publishing to improve cold start time. -->
-    <PublishReadyToRun>true</PublishReadyToRun>    
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
@@ -25,7 +26,7 @@
     <PackageReference Include="Nager.PublicSuffix" Version="3.5.0" />
   </ItemGroup>
 
-    <Target Name="DownloadContentFiles" BeforeTargets="Build">
+  <Target Name="DownloadContentFiles" BeforeTargets="ResolveReferences">
     <DownloadFile SourceUrl="https://publicsuffix.org/list/public_suffix_list.dat"
       DestinationFolder="$(MSBuildProjectDirectory)">
       <Output TaskParameter="DownloadedFile" ItemName="Content" />
