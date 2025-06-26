@@ -1,3 +1,4 @@
+#!/bin/bash
 set -ex
 
 #
@@ -30,7 +31,7 @@ export ALLOWED_IPS="${ALLOWED_IPS:-$(curl -s checkip.amazonaws.com)/32}"
 # with the region name, and a bucket with the resuling name must exist in each deployment
 # region (due to the way CloudFormation/SAM works). You can run `scripts/prerequisites.sh`
 # to find or create a set of buckets with the correct prefix in each region.
-export DEPLOY_BUCKET_NAME_PREFIX="${DEPLOY_BUCKET_NAME_PREFIX:-$(. "$(dirname "${BASH_SOURCE[0]}")/prerequisites.sh"; echo $DEPLOY_BUCKET_NAME_PREFIX)}"
+export DEPLOY_BUCKET_NAME_PREFIX="${DEPLOY_BUCKET_NAME_PREFIX:-_replace_with_a_valid_prefix_}"
 
 # The S3 path prefix to use for deployment artifacts. The `cloudformation deploy` and
 # `sam deploy` commands will use this prefix to store artifacts used in the respective
