@@ -22,7 +22,7 @@ My DNS can:
 * Proxy unmatched DNS requests to an upstream DNS service of your choice (default is 1.0.0.3).  The upstream DNS will see a public AWS IP address as the client rather than your own, enhancing privacy.
 * Incur low usage-based costs (free when within the AWS and Proxylity free tiers). 
 
-> **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port, so a network level configuration is required to use it (DNAT at the router).  On Linux, and hardware that supports it like Cisco (IOS/IOS-XE), `iptables` DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support it. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
+> **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port (Linux does with `dnsmasq`), so a network level configuration is required to use it (DNAT at the router).  On hardware that supports it like Cisco (IOS/IOS-XE), DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support something similar. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
 
 ## Code
 
