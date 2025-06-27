@@ -289,7 +289,7 @@
             "object": {
               "key": [
                 {
-                  "prefix": "logs/*"
+                  "prefix": "logs/"
                 }
               ]
             }
