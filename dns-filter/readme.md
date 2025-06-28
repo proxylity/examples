@@ -208,35 +208,76 @@ Requests sent:   1730r/s        Replies received:   1730r/s (mean=118ms / max=21
 ...
 ```
 
-To remove the example stack:
-```bash
-./scripts/teardown.sh
+On a Linux system `dnsmasq` provides a convenient way to configure DNS on a non-standard port. For example, on my embedded device (Armbian) I can route all local DNS requests out to my demo endpoint:
+
+```
+# Install dnsmasq
+apt update && apt install dnsmasq
+
+# Configure dnsmasq to forward to your custom DNS server
+cat > /etc/dnsmasq.d/custom-dns.conf << EOF
+# Listen on localhost port 53
+listen-address=127.0.0.1
+port=53
+
+# Forward all queries to your custom DNS server
+server=15.197.76.92#2069
+
+# Don't read /etc/hosts
+no-hosts
+
+# Don't read /etc/resolv.conf
+no-resolv
+
+# Cache size
+cache-size=1000
+EOF
+
+# Disable systemd-resolved if it's running
+systemctl stop systemd-resolved
+systemctl disable systemd-resolved
+
+# Update /etc/resolv.conf to use localhost
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+
+# Start dnsmasq
+systemctl enable dnsmasq
+systemctl start dnsmasq
+
+# Test
+dig example.com
 ```
 
 ## Using
 
 * **To block a domain:**  
-Add an item to the DDB table with the PK and SK both set to the domain name and the attribute `blocked` with a value of `true`. A domain can be a fully qualified domain name (FQDN) like www.example.com, a root domain like example.com (which blocks it and all subdomains) or even a top level domain like .io (which blocks any domain on that TLD).
+Add an item to the DDB table with the PK and SK both set to the domain name and the attribute `blocked` with a value of `true`. A domain can be a fully qualified domain name (FQDN) like www.cheese.com, a root domain like cheese.com (which blocks it and all subdomains) or even a top level domain like .io (which blocks any domain on that TLD).
 ```bash
-aws dynamodn put-item --table-name ${DNS_TABLE} --item ...
+aws dynamodb put-item --table-name ${DNS_TABLE} \
+  --item '{"PK":{"S":"cheese.com"},"SK":{"S":"cheese.com"},"blocked":{"BOOL":true}}'
 ```
 * **To redirect domain:**  
 Add a domain as above, but instead of setting the `blocked` attribute instead set the `redirect` attribute to the IP address that should be returned when that domain is requested.
 ```bash
-aws dynamodn put-item --table-name ${DNS_TABLE} --item ...
+aws dynamodb put-item --table-name ${DNS_TABLE} \
+  --item '{"PK":{"S":"cheese.com"},"SK":{"S":"cheese.com"},"redirect":{"S":"127.0.0.1"}}'
 ```
-* **To block an ASN:**  
+* **To block or redirect an ASN:**  
 Add an item to the DDB table with the PK and SK both set to `AS#{AsnNumber}` and the attribute `blocked` with a value of `true`. Any DNS lookup that returns an IP managed by that ASN will be rewritten to return the unroutable IP.
-```bash
-aws dynamodn put-item --table-name ${DNS_TABLE} --item ...
-```
-* **To redirect an ASN:**  
-Add an item to the DDB table with the PK and SK both set to `AS#{AsnNumber}` and the attribute `redirect` attribute to the IP address that should be returned a lookup returns any IP operated by that ASN.
 ```bash
 aws dynamodn put-item --table-name ${DNS_TABLE} --item ...
 ```
 
 Initially, no domains or ASNs are present in the DB and all DNS requests are answered normally. See the deployment instructions below for how to bulk load a block list into the table.
+
+## Cleanup
+
+To remove the MyDNS, first empty the content of the regional data buckets (names start with "dns-data").  Then remove the stacks:
+```bash
+./scripts/teardown.sh
+``` 
+
+If buckets were created with `prequisites.sh` to facilitate the deployment they will need to be emptied and removed manually.
 
 ## Roadmap
 
@@ -246,6 +287,7 @@ That said, some helpful capabilities are still missing from this project:
 
 * An administrative UX to add, update and remove domains would be more convenient than using the AWS console or CLI.
 * A dashboard presentation of DNS metrics, either built into the admin UX or a CloudWatch dashboard vreated as part of the deployment.
+* Email notifications when suspicious domains are found, with "one click" blocking links.
 
 And, of course, this repo is open to pull requests!
 
