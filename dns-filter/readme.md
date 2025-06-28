@@ -263,9 +263,29 @@ aws dynamodb put-item --table-name ${DNS_TABLE} \
   --item '{"PK":{"S":"cheese.com"},"SK":{"S":"cheese.com"},"redirect":{"S":"127.0.0.1"}}'
 ```
 * **To block or redirect an ASN:**  
-Add an item to the DDB table with the PK and SK both set to `AS#{AsnNumber}` and the attribute `blocked` with a value of `true`. Any DNS lookup that returns an IP managed by that ASN will be rewritten to return the unroutable IP.
+Add an item to the DDB table with the PK and SK both set to `AS#{AsnNumber}` and the attribute `blocked` with a value of `true` or `redirect` with an IP address. Any DNS lookup that returns an IP managed by that ASN will be rewritten to return the unroutable IP or redirect IP. Note that ASN blocks are only updated once per hour but if you want it to take effect immeadiately, just add the record and then manually run the `asn-dns-data-lambda` function to rebuild the lookup data.
 ```bash
-aws dynamodn put-item --table-name ${DNS_TABLE} --item ...
+# To block an ASN (returns an unroutable IP)
+aws dynamodb put-item --table-name ${DNS_TABLE} \
+  --item '{
+    "PK": {"S": "AS#44901"},
+    "SK": {"S": "AS#44901"},
+    "GSI1PK": {"S": "BLOCKED_ASNS"},
+    "GSI1SK": {"S": "44901"},
+    "asn": {"N": "44901"},
+    "blocked": {"BOOL": true}
+  }'
+
+# To redirect an ASN to a specific IP
+aws dynamodb put-item --table-name ${DNS_TABLE} \
+  --item '{
+    "PK": {"S": "AS#44901"},
+    "SK": {"S": "AS#44901"},
+    "GSI1PK": {"S": "BLOCKED_ASNS"},
+    "GSI1SK": {"S": "44901"},
+    "asn": {"N": "44901"},
+    "redirect": {"S": "127.0.0.1"}
+  }'
 ```
 
 Initially, no domains or ASNs are present in the DB and all DNS requests are answered normally. See the deployment instructions below for how to bulk load a block list into the table.
