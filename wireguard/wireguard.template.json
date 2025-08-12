@@ -1,0 +1,206 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a WireGuard service using an AWS Lambda Function connected to a Proxylity WireGuard Listener. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describing which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    },
+    "Peer1PublicKey": {
+      "Description": "WireGuard public key for the first peer",
+      "Type": "String",
+      "MinLength": 44,
+      "MaxLength": 44
+    },
+    "Peer2PublicKey": {
+      "Description": "WireGuard public key for the second peer",
+      "Type": "String",
+      "MinLength": 44,
+      "MaxLength": 44
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Lambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Policies": [
+          "AWSLambdaBasicExecutionRole"
+        ],
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Runtime": "provided.al2023",
+        "CodeUri": "src/wg-echo-lambda",
+        "Handler": "bootstrap"
+      },
+      "Metadata": {
+        "BuildMethod": "makefile"
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowLambdaInvoke",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Lambda",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "Lambda",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Listener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "wg"
+        ],
+        "Peers": [
+          {
+            "PublicKey": {
+              "Ref": "Peer1PublicKey"
+            },
+            "AllowedIPs": [
+              "0.0.0.0/0",
+              "::/0"
+            ]
+          },
+          {
+            "PublicKey": {
+              "Ref": "Peer2PublicKey"
+            },
+            "AllowedIPs": [
+              "0.0.0.0/0",
+              "::/0"
+            ]
+          }
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the wireguard echo lambda, which responds to ICMP pings and UDP.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 0.1
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Lambda",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${Listener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Listener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${Listener.Domain}.proxylity.com:${Listener.Port}"
+      }
+    },
+    "PublicKey": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Listener",
+          "WireGuardPublicKey"
+        ]
+      }
+    }
+  }
+}
