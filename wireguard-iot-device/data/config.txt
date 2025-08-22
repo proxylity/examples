@@ -1,0 +1,28 @@
+# Example configuration file for Proxylity UDP Gateway IoT Demo
+# Place this file as 'config.txt' in the board LittleFS filesystem.
+# With PlatformIO: put this file into the project `data/` folder and run `platformio run --target uploadfs` to upload it to the device.
+
+# WiFi Network Configuration
+# Replace with your actual WiFi credentials
+ssid_name: Your_SSID_Name
+ssid_psk: Your_SSID_Password
+
+# WireGuard VPN Configuration
+# Generate these keys using WireGuard tools:
+# wg genkey | tee private.key | wg pubkey > public.key
+
+# Your device's private key (keep this secret!)
+wg_private_key: <Your Device's Private Key (in base64)>
+
+# Server/peer configuration (get these from your Proxylity setup)
+wg_peer_public_key: <Your Listener's Generated Public Key (in base64)
+wg_peer_endpoint: <Your Listener's Assigned Ingress Domain>
+wg_peer_port: <Your Listener's Assigned Port Number>
+
+# Notes:
+# - Lines starting with '#' are comments and will be ignored
+# - Use format: key: value (colon separated)
+# - No quotes needed around values
+# - WiFi SSID and password are case-sensitive
+# - WireGuard keys must be exactly 44 characters (base64 encoded)
+# - Keep this file secure as it contains sensitive credentials
