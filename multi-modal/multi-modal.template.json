@@ -3,6 +3,12 @@
   "Transform": "AWS::Serverless-2016-10-31",
   "Description": "Example template for creating a mixed HTTP and UDP service using AWS API Gateway and Proxylity UDP Gateway. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
   "Parameters": {
+    "ApiKeyValue": {
+      "Description": "The key value for the API Gateway endpoints used to prevent random people from triggering the API and state machine. Must be at least 20 characters",
+      "Type": "String",
+      "NoEcho" : "true",
+      "MinLength": 20
+    },
     "ClientCidrToAllow": {
       "Description": "The CIDR describing which IP addresses should be allowed to use the UDP listener. Default is open/everyone.",
       "Type": "String",
@@ -182,12 +188,17 @@
               "ResponseTemplates": {
                 "application/json": {
                   "Fn::Join": [
-                    "",
+                    "\n",
                     [
-                      "#set($inputRoot = $input.path('$'))\n<html><body><h2>Command to Send UDP:</h2><pre>printf \"${inputRoot.executionArn.split(':')[7]}\" | ncat -u ",
+                      "#set($inputRoot = $input.path('$'))",
+                      "<html><body>",
+                      "<h2>Command to set envar:</h2>",
+                      "<pre>export EXECUTION_ID=\"${inputRoot.executionArn.split(':')[7]}\"</pre>",
+                      "<h2>Your UDP endpoint is: </h2>",
                       {
-                        "Fn::Sub": "${UdpListener.Domain}.proxylity.com ${UdpListener.Port}</pre></body></html>"
-                      }
+                        "Fn::Sub": "<pre>${UdpListener.Domain}.proxylity.com:${UdpListener.Port}</pre>"
+                      },
+                      "</body></html>"
                     ]
                   ]
                 }
@@ -646,7 +657,10 @@
             },
             "StageName": "example"
           }
-        ]
+        ],
+        "Value": {
+          "Ref": "ApiKeyValue"
+        }
       }
     },
     "UsagePlan": {
@@ -734,12 +748,6 @@
       "Value": {
         "Fn::Sub": "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/example"
       }
-    },
-    "ApiKey": {
-      "Value": {
-        "Ref": "ApiKey"
-      },
-      "Description": "API Key for accessing the rate-limited API. Include in `x-api-key` header."
     }
   }
 }

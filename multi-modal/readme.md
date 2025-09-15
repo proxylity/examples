@@ -1,14 +1,14 @@
 # Multi-Modal HTTP and UDP Workflow
 
-This example demonstrates a workflow in which a browser request coordinates with UDP events using UDP Gateway along with AWS API Gateway, DynamoDB and StepFunctions.  
+This example demonstrates a workflow in which a browser (HTTP) request must match a corallated UDP event to complete a high-level task. The esample uses UDP Gateway alongside AWS API Gateway with shared state in DynamoDB and StepFunctions providing the logic.
 
-1. A visitor to the API root resource is causes an execution of the `RootStateMachine` resource, with the resulting execution ID being displayed to the user (trivial rendering to HTML). 
-2. The statemachine runs asyncrounously (note the STANDRD type) and saves the execution ID and task token to DynamoDB, then pauses execution due to the `.waitForTaskToken` suffix on the Task `Resource`.  
-3. Next, using `ncat` or similar, the ID can be sent via UDP to the Listener and delivered to the `UdpStateMachine` by the Destination.
-4. The state machine which retrieves the `TaskToken` from DynamoDB.
-5. Then it uses the task token to trigger the completion of the wait task and allowing the first `RootStateMachine` execution to continue.  
+1. A visitor to the API root resource is causes an execution of the `RootStateMachine` statemachine, and the resulting execution ID is returned to the user (trivially rendering to HTML). 
+2. The statemachine runs asyncrounously (note it is of the STANDRD type to make this "idle" time cost effective) to save the execution ID and task token to DynamoDB, then pauses execution (using the `.waitForTaskToken` task ARN suffix) waiting for the UDP message to complete the task.  
+3. Next, using `ncat` or similar, the execution ID returned from the HTTP request is sent via UDP to the Listener and delivered to the `UdpStateMachine`.
+4. The `UdpStateMachine` state machine retrieves the `TaskToken` from DynamoDB by querying with the execution ID as the PK.
+5. The `UdpStateMachine` "completes" the task token to trigger the continuation of the `RootStateMachine` from the Wait task, completing its execution.  
 
-This type of flow can be found in Wi-Fi portal authentication, IoT device onboarding and other use cases. The basic construction here can be built on for more complex interactions and business logic.
+This type of advanced multi-modal flow can be found in matchmacking for multi-player games, Wi-Fi portal authentication, IoT device onboarding and other use cases. Using UDP Gateway allows using serverless architectures from end-to-end, which simplifies development and lowers operational complexity and cost.
 
 ## System Diagram
 
@@ -39,17 +39,25 @@ sfn2-->|4: retrieve token by id|ddb
 
 > **NOTE**: The instructions below assume the `aws` CLI, `jq` and `ncat` are available on your Linux system. 
 
-To deploy the template:
+This template protects the API with a 20-31 character API key so random visitors can't trigger it, and there are rate limits applied, too.  None of this is really necessary, but are good practices when making APIs available in public. You'll see the API key being added to the `curl` commands that follow.
+
+```bash
+export API_KEY=$(tr -dc A-Za-z0-9_+.~ </dev/urandom | head -c $[20 + $RANDOM % 12])
+```
+
+Next we deploy the template, providing the API key as a parameter:
 
 ```bash
 aws cloudformation deploy \
   --template-file multi-modal.template.json \
   --stack-name multimodal-example \
   --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ApiKeyValue=${API_KEY} \
   --region us-west-2
 ```
 
-The template will create a few resources, including an API Gateway and a UDP Gateway Listener.  To exercise them we need to grab the connection information for each from the stack outputs, and pit them in environment variables for easy use:
+The template creates a few resources, including the API Gateway and UDP Gateway Listener endpoints. To exercise them we need the endpoint information from the stack output, which we'll put in environment variables for easy use.  First we'll descrive the stack and write the response to a JSON file, then us `jq` to extract the values:
 
 ```bash
 aws cloudformation describe-stacks \
@@ -59,33 +67,35 @@ aws cloudformation describe-stacks \
   > outputs.json
 
 export API_ENDPOINT=$(jq -r ".[]|select(.OutputKey==\"ApiEndpoint\")|.OutputValue" outputs.json)
-export API_KEY=$(jq -r ".[]|select(.OutputKey==\"ApiKey\")|.OutputValue" outputs.json)
-
 export UDP_DOMAIN=$(jq -r ".[]|select(.OutputKey==\"Domain\")|.OutputValue" outputs.json)
 export UDP_PORT=$(jq -r ".[]|select(.OutputKey==\"Port\")|.OutputValue" outputs.json)
 ```
 
-To start the workflow we'll perform a GET on the root resource of the API Gateway, just as visiting with a browser would do. 
-
-> **Note:** This template protects the API with an API key so random visitors can't trigger it, and there are rate limits applied, too.  None of this is really necessary, but are good practices when making APIs available in public. You'll see the API key being added to the `curl` commands that follow.
+To start the workflow we'll perform a GET on the root resource of the API Gateway.  This causes the API to start (execute) the state machine and return the ID: 
 
 ```bash
-curl ${API_ENDPOINT} -H "x-api-key: ${API_KEY}"
+curl ${API_ENDPOINT} -H "x-api-key: ${API_KEY}" > response.html
+more response.html
 ```
 
-That should return a result that looks something like this, but with an actual execution ID:
-
+That should return HTML content showing a bash command (including your request-specific execution ID) and the UDP endpoint to "complete" the process:
+                                                                                                                                                                                                                      
 ```html
-<html><body>Execution ID: {your execution ID here}</body></html>
+<html><body>
+<h2>Command to set envar:</h2>
+<pre>export EXECUTION_ID="eb0a7644-b8d2-41c2-9db3-15734e6229f7"</pre>
+<h2>Your UDP endpoint is: </h2>
+<pre>ingress-1.proxylity.com:2062</pre>
+</body></html>
 ```
 
-Let's capture that execution ID in a veriable since we'll be using it a few times:
+Let's copy/paste that `export` command to set the `EXECUTION_ID` environment variable since we'll be using it a few times below:
 
 ```bash
-export EXECUTION_ID="{paste your execution ID here}"
+export EXECUTION_ID="{your execution ID here}"
 ```
 
-To verify the state machine execution is there, and waiting to be resumes we can make a GET request to the `poll` endpoint (make sure you copy and paste your execution ID into an envar, per above):
+We can verify the state machine execution is there and waiting to be resumed by make a GET request to the `poll` endpoint (make sure you have copy and pasted your execution ID into an envar, per above):
 
 ```bash
 curl "${API_ENDPOINT}/poll?executionId=${EXECUTION_ID}" -H "x-api-key: ${API_KEY}"
@@ -115,7 +125,7 @@ This time the status should come back as compeleted:
 
 ```json
 {
-  "status": "COMPLETED"
+  "status": "SUCCEEDED"
 }
 ```
 
@@ -130,7 +140,7 @@ This time it responds with a "FAILED" message, because the execution has complet
 To remove all the resources created by the example stack:
 
 ```bash
-aws cloudformation delete-stack --stack-name packet-counter-example --region us-west-2
+aws cloudformation delete-stack --stack-name multimodal-example --region us-west-2
 ```
 
 ## Implementation Notes
