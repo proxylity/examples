@@ -1,14 +1,14 @@
 # Multi-Modal HTTP and UDP Workflow
 
-This example demonstrates a workflow in which a browser (HTTP) request must match a corallated UDP event to complete a high-level task. The esample uses UDP Gateway alongside AWS API Gateway with shared state in DynamoDB and StepFunctions providing the logic.
+This example demonstrates a workflow in which a browser (HTTP) request must match a correlated UDP event to complete a high-level task. The example uses UDP Gateway alongside AWS API Gateway with shared state in DynamoDB and StepFunctions providing the logic.
 
-1. A visitor to the API root resource is causes an execution of the `RootStateMachine` statemachine, and the resulting execution ID is returned to the user (trivially rendering to HTML). 
-2. The statemachine runs asyncrounously (note it is of the STANDRD type to make this "idle" time cost effective) to save the execution ID and task token to DynamoDB, then pauses execution (using the `.waitForTaskToken` task ARN suffix) waiting for the UDP message to complete the task.  
+1. A visitor to the API root resource causes an execution of the `RootStateMachine` state machine, and the resulting execution ID is returned to the user (trivially rendering to HTML). 
+2. The state machine runs asynchronously (note it is of the STANDARD type to make this "idle" time cost effective) to save the execution ID and task token to DynamoDB, then pauses execution (using the `.waitForTaskToken` task ARN suffix) waiting for the UDP message to complete the task.  
 3. Next, using `ncat` or similar, the execution ID returned from the HTTP request is sent via UDP to the Listener and delivered to the `UdpStateMachine`.
 4. The `UdpStateMachine` state machine retrieves the `TaskToken` from DynamoDB by querying with the execution ID as the PK.
 5. The `UdpStateMachine` "completes" the task token to trigger the continuation of the `RootStateMachine` from the Wait task, completing its execution.  
 
-This type of advanced multi-modal flow can be found in matchmacking for multi-player games, Wi-Fi portal authentication, IoT device onboarding and other use cases. Using UDP Gateway allows using serverless architectures from end-to-end, which simplifies development and lowers operational complexity and cost.
+This type of advanced multi-modal flow can be found in matchmaking for multi-player games, Wi-Fi portal authentication, IoT device onboarding and other use cases. Using UDP Gateway allows using serverless architectures from end-to-end, which simplifies development and lowers operational complexity and cost.
 
 ## System Diagram
 
@@ -57,7 +57,7 @@ aws cloudformation deploy \
   --region us-west-2
 ```
 
-The template creates a few resources, including the API Gateway and UDP Gateway Listener endpoints. To exercise them we need the endpoint information from the stack output, which we'll put in environment variables for easy use.  First we'll descrive the stack and write the response to a JSON file, then us `jq` to extract the values:
+The template creates a few resources, including the API Gateway and UDP Gateway Listener endpoints. To exercise them we need the endpoint information from the stack output, which we'll put in environment variables for easy use.  First we'll describe the stack and write the response to a JSON file, then use `jq` to extract the values:
 
 ```bash
 aws cloudformation describe-stacks \
@@ -95,7 +95,7 @@ Let's copy/paste that `export` command to set the `EXECUTION_ID` environment var
 export EXECUTION_ID="{your execution ID here}"
 ```
 
-We can verify the state machine execution is there and waiting to be resumed by make a GET request to the `poll` endpoint (make sure you have copy and pasted your execution ID into an envar, per above):
+We can verify the state machine execution is there and waiting to be resumed by making a GET request to the `poll` endpoint (make sure you have copy and pasted your execution ID into an environment variable, per above):
 
 ```bash
 curl "${API_ENDPOINT}/poll?executionId=${EXECUTION_ID}" -H "x-api-key: ${API_KEY}"
@@ -121,7 +121,7 @@ A "SUCCESS" outcome indicates the `RootStateMachine` was resumed, at which point
 curl "${API_ENDPOINT}/poll?executionId=${EXECUTION_ID}" -H "x-api-key: ${API_KEY}"
 ```
 
-This time the status should come back as compeleted:
+This time the status should come back as completed:
 
 ```json
 {
@@ -135,7 +135,7 @@ And, to verify that the execution ID presented by the initial visit to the API r
 (printf "${EXECUTION_ID}" && sleep 2) | ncat -u $UDP_DOMAIN $UDP_PORT -w 2
 ```
 
-This time it responds with a "FAILED" message, because the execution has completed and cannot be resumed.  This kind of multi-model, interlocked flow is common in hardware integrations and with UDP Gateway can be implenented in a very modern, AWS native way.
+This time it responds with a "FAILED" message, because the execution has completed and cannot be resumed.  This kind of multi-modal, interlocked flow is common in hardware integrations and with UDP Gateway can be implemented in a very modern, AWS native way.
 
 To remove all the resources created by the example stack:
 
