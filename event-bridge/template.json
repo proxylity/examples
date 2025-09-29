@@ -1,0 +1,253 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": [
+    "AWS::Serverless-2016-10-31",
+    "AWS::LanguageExtensions"
+  ],
+  "Description": "Example template for creating a UDP Listener that sends inbound packets to EventBridge. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowEventBridgePutEvents",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Sfn",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutEvents"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the default event bus.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 11,
+              "TimeoutInSeconds": 0.5
+            },
+            "Formatter": "utf8",
+            "DestinationArn": {
+              "*": "arn:aws:events:us-west-2:303627368183:event-bus/default"
+            }
+          }
+        ]
+      }
+    },
+    "ProxylityPacketLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/events/proxylity-udp-packets",
+        "RetentionInDays": 7
+      }
+    },
+    "LogGroupResourcePolicy": {
+      "Type": "AWS::Logs::ResourcePolicy",
+      "Properties": {
+        "PolicyName": "EventBridgeLogsPolicy",
+        "PolicyDocument": {
+          "Fn::ToJsonString": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "EventBridgeLogsPolicy",
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "events.amazonaws.com"
+                },
+                "Action": [
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents"
+                ],
+                "Resource": {
+                  "Fn::Sub": "${ProxylityPacketLogGroup.Arn}:*"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "ProxylityPacketRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Captures UDP packets from proxylity with detail type udp-gateway-packet-ingress",
+        "EventPattern": {
+          "source": [
+            "proxylity"
+          ],
+          "detail-type": [
+            "udp-gateway-packet-ingress"
+          ]
+        },
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "ProxylityPacketLogTarget",
+            "Arn": {
+              "Fn::GetAtt": [
+                "ProxylityPacketLogGroup",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "DestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAtt": [
+                "UdpListener",
+                "DestinationNames"
+              ]
+            }
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::Sub": "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+        },
+        "Foo": "Bar"
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    },
+    "PacketLogGroup": {
+      "Description": "CloudWatch Logs group where proxylity UDP packets will be visible",
+      "Value": {
+        "Ref": "ProxylityPacketLogGroup"
+      }
+    }
+  }
+}

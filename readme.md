@@ -4,7 +4,8 @@ The folders here contain examples of using our Gateway (UDP as a Service) in var
 
 * A simple [UDP Packet Counter](packet-counter) implemented in Lambda, and in [Step Functions](packet-counter-sfn).
 * A [multi-homed](packet-counter-multi-region) (region) version of Packet Counter demonstrating the use of Destinations with region-specific ARNs.
-* A service for receiving [log messages](syslog) over UDP and directing them to both CloudWatch and S3 via Firehose, all with no code.
+* A service for receiving [log messages](syslog) over UDP and directing them to both CloudWatch Logs and S3 via Firehose, all with no code.
+* Using [EventBridge with UDP Gateway](event-bridge), demonstrating a simple example of sending captured UDP traffic to CloudWatch Logs.  
 * Combining HTTP browser interactions with UDP interactions in a [multi-modal flow](multi-modal) featuring long-running tasks using API Gateway in conjunction with UDP Gateway.
 * A DNS resolver implementing [DNS Filtering](dns-filter) (domain blocking and redirection) for bespoke DNS in your own AWS account.
 * A [WireGuard Backend](./wireguard-echo/readme.md) that supports UDP echo and ICMP ping through an encrypted tunnel (without a server, of course).
