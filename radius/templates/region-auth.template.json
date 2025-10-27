@@ -1,0 +1,1134 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "RADIUS authentication service resources including Lambda functions, DynamoDB table, and archiving.",
+  "Parameters": {
+    "RadiusLogRetentionDays": {
+      "Description": "Number of days to retain RADIUS logs in CloudWatch Logs",
+      "Type": "Number",
+      "Default": 90
+    },
+    "AuthStateTableReadCapacity": {
+      "Description": "Read capacity units for the RADIUS authentication state table",
+      "Type": "Number",
+      "Default": 0
+    },
+    "AuthStateTableWriteCapacity": {
+      "Description": "Write capacity units for the RADIUS authentication state table",
+      "Type": "Number",
+      "Default": 0
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for Lambda functions",
+      "Type": "String",
+      "Default": "INFO"
+    },
+    "RadiusKmsKeyId": {
+      "Description": "ID of the KMS key for encryption",
+      "Type": "String"
+    },
+    "RadiusKmsKeyArn": {
+      "Description": "ARN of the KMS key for encryption",
+      "Type": "String"
+    },
+    "RadiusParserFunctionArn": {
+      "Description": "ARN of the RADIUS packet parser Lambda function",
+      "Type": "String"
+    },
+    "RadiusWriterFunctionArn": {
+      "Description": "ARN of the RADIUS packet writer Lambda function",
+      "Type": "String"
+    }
+  },
+  "Conditions": {
+    "AuthTableCapacitySpecified": {
+      "Fn::And": [
+        {
+          "Fn::Not": [
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AuthStateTableReadCapacity"
+                },
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "Fn::Not": [
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AuthStateTableWriteCapacity"
+                },
+                0
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    },
+    "GlobalStack": {
+      "Outputs": {
+        "Fn::Transform": {
+          "Name": "AWS::Include",
+          "Parameters": {
+            "Location": "../global-outputs.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "RadiusAuthDataBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "aws:kms",
+                "KMSMasterKeyID": {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              },
+              "BucketKeyEnabled": true
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "ExpireOldData",
+              "Status": "Enabled",
+              "ExpirationInDays": 1096
+            },
+            {
+              "Id": "AbortIncompleteMultipartUpload",
+              "Status": "Enabled",
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 7
+              }
+            },
+            {
+              "Id": "ArchiveOldData",
+              "Status": "Enabled",
+              "Transitions": [
+                {
+                  "TransitionInDays": 90,
+                  "StorageClass": "STANDARD_IA"
+                },
+                {
+                  "TransitionInDays": 365,
+                  "StorageClass": "GLACIER"
+                }
+              ]
+            }
+          ]
+        },
+        "NotificationConfiguration": {
+          "EventBridgeConfiguration": {
+            "EventBridgeEnabled": true
+          }
+        }
+      }
+    },
+    "EventBridgeLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "EventBridgeRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowLambdaInvoke",
+              "Effect": "Allow",
+              "Action": [
+                "lambda:InvokeFunction"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthArchiveFunction",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAuthEventBridgeRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-auth-s3-events"
+        },
+        "Description": "Route S3 events for RADIUS authentication data processing",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "Object Created"
+          ],
+          "detail": {
+            "bucket": {
+              "name": [
+                {
+                  "Ref": "RadiusAuthDataBucket"
+                }
+              ]
+            }
+          }
+        },
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "RadiusAuthS3ProcessingTarget",
+            "Arn": {
+              "Fn::GetAtt": [
+                "RadiusAuthArchiveFunction",
+                "Arn"
+              ]
+            },
+            "RoleArn": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "EventBridgeRoleArn"
+              ]
+            },
+            "InputTransformer": {
+              "InputPathsMap": {
+                "bucket": "$.detail.bucket.name",
+                "key": "$.detail.object.key"
+              },
+              "InputTemplate": "{\"BucketName\":\"<bucket>\",\"ObjectKey\":\"<key>\"}"
+            }
+          }
+        ]
+      }
+    },
+    "RadiusAuthLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "RadiusAuthLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowCallStepFunctions",
+              "Effect": "Allow",
+              "Action": [
+                "states:StartSyncExecution"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthStateMachine",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "AllowDynamoDBAccess",
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Query",
+                "dynamodb:Scan",
+                "dynamodb:BatchGetItem",
+                "dynamodb:BatchWriteItem"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthStateTable",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "${TableArn}/index/*",
+                    {
+                      "TableArn": {
+                        "Fn::GetAtt": [
+                          "RadiusAuthStateTable",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "AllowKMSAccess",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowS3Access",
+              "Effect": "Allow",
+              "Action": [
+                "s3:PutObject",
+                "s3:GetObject"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${RadiusAuthDataBucket.Arn}/*"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowBedrockRuntimeConverse",
+              "Effect": "Allow",
+              "Action": [
+                "bedrock-runtime:Converse",
+                "bedrock:InvokeModel"
+              ],
+              "Resource": [
+                "*",
+                {
+                  "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:foundation-model/amazon.nova-lite-v1:0"
+                },
+                {
+                  "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:model/*"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowCloudWatchLogs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAuthArchiveFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-agg-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "Timeout": 10,
+        "MemorySize": 1024,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusAuthLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "LOG_LEVEL": {
+              "Ref": "LambdaLogLevel"
+            },
+            "KMS_KEY_ID": {
+              "Ref": "RadiusKmsKeyId"
+            },
+            "RADIUS_AUTH_STATE_TABLE": {
+              "Ref": "RadiusAuthStateTable"
+            },
+            "BEDROCK_MODEL_ID": {
+              "Fn::Sub": [
+                "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${AWS_CONTINENT_PREFIX}.amazon.nova-lite-v1:0",
+                {
+                  "AWS_CONTINENT_PREFIX": {
+                    "Fn::Select": [
+                      0,
+                      {
+                        "Fn::Split": [
+                          "-",
+                          {
+                            "Ref": "AWS::Region"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "RADIUS_SHARED_SECRET": "not-so-secret"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "SystemLogLevel": "INFO",
+          "LogGroup": {
+            "Ref": "RadiusAuthArchiveFunctionLogGroup"
+          }
+        }
+      }
+    },
+    "RadiusAuthArchiveFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-radius-auth-archive"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+    "RadiusAuthStateTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": {
+          "Fn::If": [
+            "AuthTableCapacitySpecified",
+            "PROVISIONED",
+            "PAY_PER_REQUEST"
+          ]
+        },
+        "ProvisionedThroughput": {
+          "Fn::If": [
+            "AuthTableCapacitySpecified",
+            {
+              "ReadCapacityUnits": {
+                "Ref": "AuthStateTableReadCapacity"
+              },
+              "WriteCapacityUnits": {
+                "Ref": "AuthStateTableWriteCapacity"
+              }
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI2PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI2SK",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "GSI1",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI1PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI1SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            },
+            "ProvisionedThroughput": {
+              "Fn::If": [
+                "AuthTableCapacitySpecified",
+                {
+                  "ReadCapacityUnits": {
+                    "Ref": "AuthStateTableReadCapacity"
+                  },
+                  "WriteCapacityUnits": {
+                    "Ref": "AuthStateTableWriteCapacity"
+                  }
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            }
+          },
+          {
+            "IndexName": "GSI2",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI2PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI2SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            },
+            "ProvisionedThroughput": {
+              "Fn::If": [
+                "AuthTableCapacitySpecified",
+                {
+                  "ReadCapacityUnits": {
+                    "Ref": "AuthStateTableReadCapacity"
+                  },
+                  "WriteCapacityUnits": {
+                    "Ref": "AuthStateTableWriteCapacity"
+                  }
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            }
+          }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "TTL",
+          "Enabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true,
+          "SSEType": "KMS",
+          "KMSMasterKeyId": {
+            "Ref": "RadiusKmsKeyId"
+          }
+        },
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        }
+      }
+    },
+    "CalculateChapHashFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-chap-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "Timeout": 10,
+        "MemorySize": 1024,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusAuthLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "LOG_LEVEL": {
+              "Ref": "LambdaLogLevel"
+            }
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "SystemLogLevel": "INFO",
+          "LogGroup": {
+            "Ref": "CalculateChapHashFunctionLogGroup"
+          }
+        }
+      }
+    },
+    "CalculateChapHashFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-calculate-chap-hash"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+    "RadiusAuthFirehoseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "RadiusAuthFirehosePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:AbortMultipartUpload",
+                    "s3:GetBucketLocation",
+                    "s3:GetObject",
+                    "s3:ListBucket",
+                    "s3:ListBucketMultipartUploads",
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "RadiusAuthDataBucket",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::Sub": [
+                        "${BucketArn}/auth-logs/*",
+                        {
+                          "BucketArn": {
+                            "Fn::GetAtt": [
+                              "RadiusAuthDataBucket",
+                              "Arn"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Resource": [
+                    {
+                      "Ref": "RadiusKmsKeyArn"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "RadiusAuthFirehose": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "Properties": {
+        "DeliveryStreamName": {
+          "Fn::Sub": "${AWS::StackName}-radius-auth-archive"
+        },
+        "DeliveryStreamType": "DirectPut",
+        "S3DestinationConfiguration": {
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "RadiusAuthDataBucket",
+              "Arn"
+            ]
+          },
+          "Prefix": "auth-logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
+          "ErrorOutputPrefix": "auth-logs-errors/",
+          "BufferingHints": {
+            "SizeInMBs": 5,
+            "IntervalInSeconds": 300
+          },
+          "CompressionFormat": "GZIP",
+          "EncryptionConfiguration": {
+            "KMSEncryptionConfig": {
+              "AWSKMSKeyARN": {
+                "Ref": "RadiusKmsKeyArn"
+              }
+            }
+          },
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "RadiusAuthFirehoseRole",
+              "Arn"
+            ]
+          },
+          "CloudWatchLoggingOptions": {
+            "Enabled": true,
+            "LogGroupName": {
+              "Ref": "RadiusAuthFirehoseLogGroup"
+            },
+            "LogStreamName": "delivery-errors"
+          }
+        }
+      }
+    },
+    "RadiusAuthFirehoseLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/kinesisfirehose/${AWS::StackName}-radius-auth-archive"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "ProxylityRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "states:StartSyncExecution",
+                "states:DescribeStateMachine"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthStateMachine",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthFirehose",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAuthDestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusAuthDestinationName"
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::GetAtt": [
+            "RadiusAuthStateMachine",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "AuthArchiveDestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "AuthArchiveDestinationName"
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::GetAtt": [
+            "RadiusAuthFirehose",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "RadiusAuthStateMachine": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "Type": "EXPRESS",
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "StepFunctionsExecutionRoleArn"
+          ]
+        },
+        "Logging": {
+          "Level": "ALL",
+          "IncludeExecutionData": true,
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "RadiusAuthStateMachineLogGroup",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "DefinitionSubstitutions": {
+          "RADIUS_AUTH_STATE_TABLE": {
+            "Ref": "RadiusAuthStateTable"
+          },
+          "RADIUS_PARSER_FUNCTION_ARN": {
+            "Ref": "RadiusParserFunctionArn"
+          },
+          "RADIUS_AUTH_WRITER_FUNCTION": {
+            "Ref": "RadiusWriterFunctionArn"
+          },
+          "CALCULATE_CHAP_HASH_FUNCTION": {
+            "Ref": "CalculateChapHashFunction"
+          }
+        },
+        "DefinitionUri": "./state-machines/radius-auth.asl.json"
+      }
+    },
+    "RadiusAuthStateMachineLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/vendedlogs/states/${AWS::StackName}-auth-workflow"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        }
+      }
+    },
+    "RadiusAuthStateMachinePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "StepFunctionsExecutionRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowLambdaInvoke",
+              "Effect": "Allow",
+              "Action": [
+                "lambda:InvokeFunction"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "CalculateChapHashFunction",
+                    "Arn"
+                  ]
+                },
+                { "Ref": "RadiusParserFunctionArn" },
+                { "Ref": "RadiusWriterFunctionArn" }
+              ]
+            },
+            {
+              "Sid": "AllowKmsForDynamoDb",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:PutItem"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAuthStateTable",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "${TableArn}/index/*",
+                    {
+                      "TableArn": {
+                        "Fn::GetAtt": [
+                          "RadiusAuthStateTable",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RadiusAuthArchiveFunctionArn": {
+      "Description": "ARN of the RADIUS authentication archive Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthArchiveFunction",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthFirehoseArn": {
+      "Description": "ARN of the RADIUS authentication Firehose delivery stream",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthFirehose",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthStateTableName": {
+      "Description": "Name of the RADIUS authentication state DynamoDB table",
+      "Value": {
+        "Ref": "RadiusAuthStateTable"
+      }
+    },
+    "RadiusAuthStateTableArn": {
+      "Description": "ARN of the RADIUS authentication state DynamoDB table",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthStateTable",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthDataBucketName": {
+      "Description": "Name of the S3 bucket for authentication data storage",
+      "Value": {
+        "Ref": "RadiusAuthDataBucket"
+      }
+    },
+    "RadiusAuthDataBucketArn": {
+      "Description": "ARN of the S3 bucket for authentication data storage",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthDataBucket",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthStateMachineArn": {
+      "Description": "ARN of the RADIUS authentication state machine",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthStateMachine",
+          "Arn"
+        ]
+      }
+    }
+  }
+}

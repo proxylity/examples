@@ -1,0 +1,361 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Parent template for RADIUS authorization and accounting service that deploys shared infrastructure and nested auth/acct stacks.",
+  "Parameters": {
+    "RadiusLogRetentionDays": {
+      "Description": "Number of days to retain RADIUS logs in S3 and CloudWatch Logs",
+      "Type": "Number",
+      "Default": 90,
+      "MinValue": 1,
+      "MaxValue": 3653
+    },
+    "AuthStateTableReadCapacity": {
+      "Description": "Read capacity units for the RADIUS authentication state table. Must specify *read* AND *write* capacity or neither will be used.",
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0
+    },
+    "AuthStateTableWriteCapacity": {
+      "Description": "Write capacity units for the RADIUS authentication state table. Must specify *read* AND *write* capacity or neither will be used.",
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for Lambda functions",
+      "Type": "String",
+      "Default": "INFO",
+      "AllowedValues": [
+        "DEBUG",
+        "INFO",
+        "WARN",
+        "ERROR"
+      ]
+    }
+  },
+  "Resources": {
+    "RadiusKmsKey": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "KMS key for encrypting RADIUS service data at rest",
+        "KeyPolicy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "EnableRootAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:root"
+                }
+              },
+              "Action": "kms:*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "AllowLambdaService",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "AllowFirehoseService",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "firehose.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey*",
+                "kms:ReEncrypt*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "AllowCloudWatchLogsService",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  {
+                    "Fn::Sub": "logs.${AWS::Region}.amazonaws.com"
+                  }
+                ]
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:CreateGrant",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "ArnEquals": {
+                  "kms:EncryptionContext:aws:logs:arn": {
+                    "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Purpose",
+            "Value": "RADIUS Service Encryption"
+          },
+          {
+            "Key": "Stack",
+            "Value": {
+              "Ref": "AWS::StackName"
+            }
+          }
+        ]
+      }
+    },
+    "RadiusKmsKeyAlias": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": {
+          "Fn::Sub": "alias/${AWS::StackName}-radius-key"
+        },
+        "TargetKeyId": {
+          "Ref": "RadiusKmsKey"
+        }
+      }
+    },
+    "RadiusSharedStack": {
+      "Type": "AWS::Serverless::Application",
+      "Properties": {
+        "Location": "./region-shared.template.json",
+        "Parameters": {
+          "RadiusLogRetentionDays": {
+            "Ref": "RadiusLogRetentionDays"
+          },
+          "LambdaLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "RadiusKmsKeyArn": {
+            "Fn::GetAtt": [
+              "RadiusKmsKey",
+              "Arn"
+            ]
+          }
+        },
+        "Tags": {
+          "Purpose": "RADIUS Shared Infrastructure",
+          "Stack": {
+            "Ref": "AWS::StackName"
+          }
+        }
+      }
+    },
+    "RadiusAuthStack": {
+      "DependsOn": [
+        "RadiusAcctStack"
+      ],
+      "Type": "AWS::Serverless::Application",
+      "Properties": {
+        "Location": "./region-auth.template.json",
+        "Parameters": {
+          "RadiusLogRetentionDays": {
+            "Ref": "RadiusLogRetentionDays"
+          },
+          "AuthStateTableReadCapacity": {
+            "Ref": "AuthStateTableReadCapacity"
+          },
+          "AuthStateTableWriteCapacity": {
+            "Ref": "AuthStateTableWriteCapacity"
+          },
+          "LambdaLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "RadiusKmsKeyId": {
+            "Ref": "RadiusKmsKey"
+          },
+          "RadiusKmsKeyArn": {
+            "Fn::GetAtt": [
+              "RadiusKmsKey",
+              "Arn"
+            ]
+          },
+          "RadiusParserFunctionArn": {
+            "Fn::GetAtt": [
+              "RadiusSharedStack",
+              "Outputs.RadiusParserFunctionArn"
+            ]
+          },
+          "RadiusWriterFunctionArn": {
+            "Fn::GetAtt": [
+              "RadiusSharedStack",
+              "Outputs.RadiusWriterFunctionArn"
+            ]
+          }
+        },
+        "Tags": {
+          "Purpose": "RADIUS Authentication Service",
+          "Stack": {
+            "Ref": "AWS::StackName"
+          }
+        }
+      }
+    },
+    "RadiusAcctStack": {
+      "Type": "AWS::Serverless::Application",
+      "Properties": {
+        "Location": "./region-acct.template.json",
+        "Parameters": {
+          "RadiusLogRetentionDays": {
+            "Ref": "RadiusLogRetentionDays"
+          },
+          "LambdaLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "RadiusKmsKeyId": {
+            "Ref": "RadiusKmsKey"
+          },
+          "RadiusKmsKeyArn": {
+            "Fn::GetAtt": [
+              "RadiusKmsKey",
+              "Arn"
+            ]
+          },
+          "RadiusParserFunctionArn": {
+            "Fn::GetAtt": [
+              "RadiusSharedStack",
+              "Outputs.RadiusParserFunctionArn"
+            ]
+          }
+        },
+        "Tags": {
+          "Purpose": "RADIUS Accounting Service",
+          "Stack": {
+            "Ref": "AWS::StackName"
+          }
+        }
+      }
+    },
+    "RadiusCloudWatchDashboard": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardName": {
+          "Fn::Sub": "${AWS::StackName}-radius-${AWS::Region}"
+        },
+        "DashboardBody": {
+          "Fn::Sub": [
+            "{\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"metrics\":[[\"AWS/Lambda\",\"Invocations\",\"FunctionName\",\"${RadiusAuthArchiveFunctionArn}\"],[\".\",\"Errors\",\".\",\".\"],[\".\",\"Duration\",\".\",\".\"]],\"view\":\"timeSeries\",\"stacked\":false,\"region\":\"${AWS::Region}\",\"title\":\"RADIUS Auth Lambda Metrics\",\"period\":300}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"metrics\":[[\"AWS/Lambda\",\"Invocations\",\"FunctionName\",\"${AcctFunction}\"],[\".\",\"Errors\",\".\",\".\"],[\".\",\"Duration\",\".\",\".\"]],\"view\":\"timeSeries\",\"stacked\":false,\"region\":\"${AWS::Region}\",\"title\":\"RADIUS Acct Lambda Metrics\",\"period\":300}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":24,\"height\":6,\"properties\":{\"metrics\":[[\"AWS/DynamoDB\",\"ConsumedReadCapacityUnits\",\"TableName\",\"${AuthStateTable}\"],[\".\",\"ConsumedWriteCapacityUnits\",\".\",\".\"]],\"view\":\"timeSeries\",\"stacked\":false,\"region\":\"${AWS::Region}\",\"title\":\"DynamoDB Capacity Metrics\",\"period\":300}}]}",
+            {
+              "RadiusAuthArchiveFunctionArn": {
+                "Fn::GetAtt": [
+                  "RadiusAuthStack",
+                  "Outputs.RadiusAuthArchiveFunctionArn"
+                ]
+              },
+              "AcctFunction": {
+                "Fn::GetAtt": [
+                  "RadiusAcctStack",
+                  "Outputs.RadiusAcctFunctionName"
+                ]
+              },
+              "AuthStateTable": {
+                "Fn::GetAtt": [
+                  "RadiusAuthStack",
+                  "Outputs.RadiusAuthStateTableName"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RadiusKmsKeyId": {
+      "Description": "ID of the KMS key used for encryption",
+      "Value": {
+        "Ref": "RadiusKmsKey"
+      }
+    },
+    "RadiusKmsKeyArn": {
+      "Description": "ARN of the KMS key used for encryption",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusKmsKey",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAcctFunctionArn": {
+      "Description": "ARN of the RADIUS accounting Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctStack",
+          "Outputs.RadiusAcctFunctionArn"
+        ]
+      }
+    },
+    "RadiusAuthArchiveFunctionArn": {
+      "Description": "ARN of the RADIUS authentication archive Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthStack",
+          "Outputs.RadiusAuthArchiveFunctionArn"
+        ]
+      }
+    },
+    "RadiusAuthFirehoseArn": {
+      "Description": "ARN of the RADIUS authentication Firehose delivery stream",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthStack",
+          "Outputs.RadiusAuthFirehoseArn"
+        ]
+      }
+    },
+    "RadiusAcctFirehoseArn": {
+      "Description": "ARN of the RADIUS accounting Firehose delivery stream",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctStack",
+          "Outputs.RadiusAcctFirehoseArn"
+        ]
+      }
+    },
+    "RadiusAuthStateTableName": {
+      "Description": "Name of the RADIUS authentication state DynamoDB table",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthStack",
+          "Outputs.RadiusAuthStateTableName"
+        ]
+      }
+    },
+    "DashboardUrl": {
+      "Description": "URL to the CloudWatch dashboard for monitoring",
+      "Value": {
+        "Fn::Sub": [
+          "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${StackName}-radius-${AWS::Region}",
+          {
+            "StackName": {
+              "Ref": "AWS::StackName"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

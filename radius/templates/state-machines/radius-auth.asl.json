@@ -1,0 +1,375 @@
+{
+    "Comment": "RADIUS Authentication State Machine. Query DDB for MAC or credentials matching the request IP and return Accept or Reject and metadata.",
+    "QueryLanguage": "JSONata",
+    "StartAt": "Parse Radius Request Packet (1)",
+    "States": {
+        "Parse Radius Request Packet (1)": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+                "FunctionName": "${RADIUS_PARSER_FUNCTION_ARN}",
+                "Payload": {
+                    "packet_data": "{% [ $states.input.Messages.Data ] %}"
+                }
+            },
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException"
+                    ],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Output": "{% $merge([$states.input, { 'Messages': [$map($states.input.Messages, function($s, $i) { $merge([$s, { 'Data': $states.result.Payload.parsed_packets[$i] }]) })] }]) %}",
+            "Next": "Process Packets Concurrently"
+        },
+        "Process Packets Concurrently": {
+            "Type": "Map",
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "INLINE"
+                },
+                "StartAt": "Setup Variables from Packet Data",
+                "States": {
+                    "Setup Variables from Packet Data": {
+                        "Type": "Pass",
+                        "Assign": {
+                            "tag": "{% $states.input.Tag %}",
+                            "remote_ip": "{% $states.input.Remote.IpAddress %}",
+                            "remote_port": "{% $states.input.Remote.Port %}",
+                            "request_code": "{% $exists($states.input.Data.code) ? $states.input.Data.code : '' %}",
+                            "request_identifier": "{% $exists($states.input.Data.identifier) ? $states.input.Data.identifier : '' %}",
+                            "request_authenticator": "{% $exists($states.input.Data.authenticator) ? $states.input.Data.authenticator : '' %}",
+                            "length_is_valid": "{% $exists($states.input.Data.length_is_valid) ? $states.input.Data.length_is_valid : false %}",
+                            "message_authenticator_is_valid": "{% $exists($states.input.Data.message_authenticator_is_valid) ? $states.input.Data.message_authenticator_is_valid : null %}",
+                            "user_name": "{% $exists($states.input.Data.attributes.'User-Name') ? $states.input.Data.attributes.'User-Name' : '' %}",
+                            "user_password": "{% $exists($states.input.Data.attributes.'User-Password') ? $states.input.Data.attributes.'User-Password' : '' %}",
+                            "chap_password": "{% $exists($states.input.Data.attributes.'CHAP-Password') ? $states.input.Data.attributes.'CHAP-Password' : '' %}",
+                            "chap_challenge": "{% $exists($states.input.Data.attributes.'CHAP-Challenge') ? $states.input.Data.attributes.'CHAP-Challenge' : '' %}",
+                            "calling_station_id": "{% $exists($states.input.Data.attributes.'Calling-Station-Id') ? $states.input.Data.attributes.'Calling-Station-Id' : '' %}",
+                            "called_station_id": "{% $exists($states.input.Data.attributes.'Called-Station-Id') ? $states.input.Data.attributes.'Called-Station-Id' : '' %}",
+                            "nas_identifier": "{% $exists($states.input.Data.attributes.'NAS-Identifier') ? $states.input.Data.attributes.'NAS-Identifier' : '' %}",
+                            "connect_info": "{% $exists($states.input.Data.attributes.'Connect-Info') ? $states.input.Data.attributes.'Connect-Info' : '' %}",
+                            "session_id": "{% $exists($states.input.Data.attributes.'Acct-Session-Id') ? $states.input.Data.attributes.'Acct-Session-Id' : $replace($uuid(),'-','') %}"
+                        },
+                        "Next": "Is this MAC, PAP or CHAP?"
+                    },
+                    "Is this MAC, PAP or CHAP?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "Not a Valid Access-Request",
+                                "Condition": "{% $request_code != 1 or $length_is_valid != true or ($message_authenticator_is_valid != null and $message_authenticator_is_valid = false) %}",
+                                "Output": "Not a valid access request.",
+                                "Next": "Reject"
+                            },
+                            {
+                                "Next": "Get Necessary Records",
+                                "Condition": "{% $length($user_password) > 0 and $user_name = $user_password and /[0-9a-f]{12}/i($replace($user_name,/-|:|\\s/,'')) %}",
+                                "Comment": "MAC Auth",
+                                "Assign": {
+                                    "auth_type": "mac"
+                                },
+                                "Output": "{% ($mac := $lowercase($replace($user_name,/-|:|\\s/,'')); $merge([$states.input, { 'user_name': $mac, 'user_password': $mac }]) ) %}"
+                            },
+                            {
+                                "Next": "Get Necessary Records",
+                                "Condition": "{% $length($user_name) > 0 and $not($length($user_password) > 0) %}",
+                                "Comment": "CHAP",
+                                "Assign": {
+                                    "auth_type": "chap"
+                                }
+                            },
+                            {
+                                "Next": "Get Necessary Records",
+                                "Condition": "{% $exists($user_name) and $length($user_password) > 0 %}",
+                                "Comment": "PAP",
+                                "Assign": {
+                                    "auth_type": "pap"
+                                }
+                            }
+                        ],
+                        "Default": "Reject",
+                        "Output": "Unsupported authentication type."
+                    },
+                    "Get Necessary Records": {
+                        "Type": "Parallel",
+                        "Next": "Does the NAS Override Password Checks?",
+                        "Branches": [
+                            {
+                                "StartAt": "Get User Record",
+                                "States": {
+                                    "Get User Record": {
+                                        "Type": "Task",
+                                        "Resource": "arn:aws:states:::dynamodb:getItem",
+                                        "Arguments": {
+                                            "TableName": "${RADIUS_AUTH_STATE_TABLE}",
+                                            "Key": {
+                                                "PK": {
+                                                    "S": "{% 'USER#' & $user_name %}"
+                                                },
+                                                "SK": {
+                                                    "S": "#CONFIG"
+                                                }
+                                            }
+                                        },
+                                        "Output": "{% $exists($states.result.Item) ? $states.result.Item : null %}",
+                                        "End": true
+                                    }
+                                }
+                            },
+                            {
+                                "StartAt": "Get NAS Record",
+                                "States": {
+                                    "Get NAS Record": {
+                                        "Type": "Task",
+                                        "Resource": "arn:aws:states:::dynamodb:getItem",
+                                        "Arguments": {
+                                            "TableName": "${RADIUS_AUTH_STATE_TABLE}",
+                                            "Key": {
+                                                "PK": {
+                                                    "S": "{% 'NAS#' & $nas_identifier %}"
+                                                },
+                                                "SK": {
+                                                    "S": "#CONFIG"
+                                                }
+                                            }
+                                        },
+                                        "Output": "{% $exists($states.result.Item) ? $states.result.Item : null %}",
+                                        "End": true
+                                    }
+                                }
+                            }
+                        ],
+                        "Output": "{% $merge([$states.input, {\n  \"user\": $states.result[0],\n  \"nas\": $states.result[1]\n}]) %}"
+                    },
+                    "Does the NAS Override Password Checks?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Condition": "{% $exists($states.input.nas.auto_allow_users.SS) and $reduce($states.input.nas.auto_allow_users.SS, function($accum, $pattern) { $accum or ($pattern = '*' or $pattern = $user_name) }, false) %}",
+                                "Next": "Generate Session Info",
+                                "Comment": "NAS Auto-Accept Rule Match (User-Password ignored)"
+                            }
+                        ],
+                        "Default": "Does the Password Match?"
+                    },
+                    "Does the Password Match?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "PAP Password Match",
+                                "Condition": "{% $auth_type = 'pap' and $exists($states.input.user.user_password.S) and $states.input.user.user_password.S = $user_password %}",
+                                "Next": "Have a MAC?"
+                            },
+                            {
+                                "Comment": "MAC Auth Match",
+                                "Condition": "{% $auth_type = 'mac' and $exists($states.input.user.user_password.S) and $states.input.user.user_password.S = $user_password %}",
+                                "Next": "Generate Session Info"
+                            },
+                            {
+                                "Comment": "Check CHAP Hash",
+                                "Condition": "{% $auth_type = 'chap' and $length($chap_password) > 0 %}",
+                                "Next": "Calculate CHAP Hash"
+                            }
+                        ],
+                        "Default": "Reject",
+                        "Output": "Authentication failed."
+                    },
+                    "Remember the MAC": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Arguments": {
+                            "TableName": "${RADIUS_AUTH_STATE_TABLE}",
+                            "Item": {
+                                "PK": {
+                                    "S": "{% 'USER#' & $replace($lowercase($calling_station_id),/-|:|\\s/,'') %}"
+                                },
+                                "SK": {
+                                    "S": "#CONFIG"
+                                },
+                                "user_password": "{% $replace($lowercase($calling_station_id),/-|:|\\s/,'') %}",
+                                "is_mac_auth": {
+                                    "BOOL": true
+                                },
+                                "authenticated_at": {
+                                    "S": "{% $states.context.State.EnteredTime %}"
+                                },
+                                "TTL": {
+                                    "N": "{% '' & ($millis()/1000 + (24 * 60 * 60)) %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Next": "Generate Session Info"
+                    },
+                    "Generate Session Info": {
+                        "Type": "Pass",
+                        "Next": "Make Note of the Anticipated Session",
+                        "Assign": {
+                            "session_duration": "{% $exists($states.input.nas.session_duration.N) ? $number($states.input.nas.session_duration.N) : 3600 %}",
+                            "vlan": "{% $exists($states.input.user.vlan.S) ? $states.input.user.vlan.S : ($exists($states.input.nas.vlan.S) ? $states.input.nas.vlan.S : '') %}"
+                        }
+                    },
+                    "Make Note of the Anticipated Session": {
+                        "Type": "Task",
+                        "Comment": "It's 'anticipated' because in the real world network equipment may not respect the session ID or the duration we provide.  RADIUS is a messy, messy world.  Nonetheless, having this information can make troubleshooting easier.",
+                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Arguments": {
+                            "TableName": "${RADIUS_AUTH_STATE_TABLE}",
+                            "Item": {
+                                "PK": {
+                                    "S": "{% 'SESSION#' & $session_id %}"
+                                },
+                                "SK": {
+                                    "S": "{% '' & $fromMillis($millis() + $session_duration * 1000) %}"
+                                },
+                                "TTL": {
+                                    "N": "{% '' & ($millis()/1000 + (24 * 60 * 60)) %}"
+                                },
+                                "authenticated_at": {
+                                    "S": "{% $states.context.State.EnteredTime %}"
+                                },
+                                "session_ends_at": {
+                                    "S": "{% $fromMillis($millis() + $session_duration * 1000) %}"
+                                },
+                                "remote_ip": {
+                                    "S": "{% $remote_ip %}"
+                                },
+                                "nas_identifier": {
+                                    "S": "{% $nas_identifier %}"
+                                },
+                                "called_station_id": {
+                                    "S": "{% $called_station_id %}"
+                                },
+                                "calling_station_id": {
+                                    "S": "{% $calling_station_id %}"
+                                },
+                                "user_name": {
+                                    "S": "{% $user_name %}"
+                                },
+                                "vlan": {
+                                    "S": "{% $vlan %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Next": "Accept"
+                    },
+                    "Calculate CHAP Hash": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "Output": "{% $states.input %}",
+                        "Arguments": {
+                            "FunctionName": "${CALCULATE_CHAP_HASH_FUNCTION}",
+                            "Payload": {
+                                "user_password": "{% $states.input.user.user_password.S %}",
+                                "chap_password": "{% $chap_password %}",
+                                "chap_challenge": "{% $chap_challenge %}"
+                            }
+                        },
+                        "Retry": [
+                            {
+                                "ErrorEquals": [
+                                    "Lambda.ServiceException",
+                                    "Lambda.AWSLambdaException",
+                                    "Lambda.SdkClientException",
+                                    "Lambda.TooManyRequestsException"
+                                ],
+                                "IntervalSeconds": 1,
+                                "MaxAttempts": 3,
+                                "BackoffRate": 2,
+                                "JitterStrategy": "FULL"
+                            }
+                        ],
+                        "Next": "Does the CHAP Hash Match?",
+                        "Assign": {
+                            "authentated": "{% $states.result.Payload.authenticated %}"
+                        }
+                    },
+                    "Does the CHAP Hash Match?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "CHAP Hash Matches, have MAC",
+                                "Condition": "{% $authentated and $length($calling_station_id) > 0 %}",
+                                "Next": "Have a MAC?"
+                            }
+                        ],
+                        "Default": "Reject",
+                        "Output": "Authentication failed."
+                    },
+                    "Have a MAC?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "Calling-Station-Id Present",
+                                "Condition": "{% $length($calling_station_id) > 0 %}",
+                                "Next": "Remember the MAC"
+                            }
+                        ],
+                        "Default": "Generate Session Info"
+                    },
+                    "Reject": {
+                        "Type": "Pass",
+                        "QueryLanguage": "JSONata",
+                        "Output": {
+                            "code": 3,
+                            "attributes": {
+                                "Reply-Message": "{% $states.input & ' ' & $states.context.State.EnteredTime %}"
+                            }
+                        },
+                        "Next": "Add Request Proprerties to Output"
+                    },
+                    "Accept": {
+                        "Output": "{% (\n  $classes:= $exists($states.input.user.groups.SS) ? $states.input.user.groups.SS : [];\n  $basic_attrs := {\n    'User-Name': $user_name,\n    'Acct-Session-Id': $session_id,\n    'Session-Timeout': $string($session_duration),\n    'Class': $join($classes, '␞')\n  };\n  $vlan_attrs := $length($vlan) > 0 ? {\n    'Tunnel-Type': \"13\",\n    'Tunnel-Medium-Type': \"6\",\n    'Tunnel-Private-Group-ID': $vlan\n  } : {};\n  \n  {\n    'code': 2,\n    'attributes': $merge([$basic_attrs, $vlan_attrs])\n  }\n) %}",
+                        "QueryLanguage": "JSONata",
+                        "Type": "Pass",
+                        "Next": "Add Request Proprerties to Output"
+                    },
+                    "Add Request Proprerties to Output": {
+                        "Type": "Pass",
+                        "End": true,
+                        "Output": "{% $merge([{ 'tag': $tag, 'request_identifier': $request_identifier, 'request_authenticator': $request_authenticator }, $states.input]) %}"
+                    }
+                }
+            },
+            "Items": "{% $exists($states.input.Messages) ? $states.input.Messages : [] %}",
+            "Next": "Write Radius Response Packet (1)"
+        },
+        "Write Radius Response Packet (1)": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+                "FunctionName": "${RADIUS_AUTH_WRITER_FUNCTION}",
+                "Payload": {
+                    "packets_to_write": "{% $states.input %}"
+                }
+            },
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException"
+                    ],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Output": {
+                "Replies": "{% [ $map($states.input, function($s, $i) { { 'Tag': $s.tag, 'Data': $states.result.Payload.packet_data[$i] } }) ] %}"
+            },
+            "End": true
+        }
+    }
+}

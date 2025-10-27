@@ -1,0 +1,229 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "RADIUS service resources that are shared within a region.",
+  "Parameters": {
+    "RadiusLogRetentionDays": {
+      "Description": "Number of days to retain RADIUS logs in CloudWatch Logs",
+      "Type": "Number",
+      "Default": 90
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for Lambda functions",
+      "Type": "String",
+      "Default": "INFO"
+    },
+    "RadiusKmsKeyArn": {
+      "Description": "ARN of the KMS key for encryption",
+      "Type": "String"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    },
+    "GlobalStack": {
+      "Outputs": {
+        "Fn::Transform": {
+          "Name": "AWS::Include",
+          "Parameters": {
+            "Location": "../global-outputs.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "RadiusLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "RadiusLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowKMSAccess",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowCloudWatchLogs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusParserFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-parser-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "LOG_LEVEL": {
+              "Ref": "LambdaLogLevel"
+            },
+            "RADIUS_SHARED_SECRET": "not-so-secret"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "SystemLogLevel": "INFO",
+          "LogGroup": {
+            "Ref": "RadiusParserFunctionLogGroup"
+          }
+        }
+      }
+    },
+    "RadiusParserFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-radius-parser"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+
+    "RadiusWriterFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-writer-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "LOG_LEVEL": {
+              "Ref": "LambdaLogLevel"
+            },
+            "RADIUS_SHARED_SECRET": "not-so-secret"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "SystemLogLevel": "INFO",
+          "LogGroup": {
+            "Ref": "RadiusWriterFunctionLogGroup"
+          }
+        }
+      }
+    },
+    "RadiusWriterFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-radius-writer"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RadiusParserFunctionArn": {
+      "Description": "ARN of the RADIUS Parser Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusParserFunction",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusWriterFunctionArn": {
+      "Description": "ARN of the RADIUS Writer Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusWriterFunction",
+          "Arn"
+        ]
+      }
+    }
+  }
+}

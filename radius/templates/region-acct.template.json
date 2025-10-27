@@ -1,0 +1,786 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "RADIUS accounting service resources including Lambda functions and archiving for session tracking.",
+  "Parameters": {
+    "RadiusLogRetentionDays": {
+      "Description": "Number of days to retain RADIUS logs in CloudWatch Logs",
+      "Type": "Number",
+      "Default": 90
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for Lambda functions",
+      "Type": "String",
+      "Default": "INFO"
+    },
+    "RadiusKmsKeyId": {
+      "Description": "ID of the KMS key for encryption",
+      "Type": "String"
+    },
+    "RadiusKmsKeyArn": {
+      "Description": "ARN of the KMS key for encryption",
+      "Type": "String"
+    },
+    "RadiusParserFunctionArn": {
+      "Description": "ARN of the RADIUS packet parser Lambda function",
+      "Type": "String"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    },
+    "GlobalStack": {
+      "Outputs": {
+        "Fn::Transform": {
+          "Name": "AWS::Include",
+          "Parameters": {
+            "Location": "../global-outputs.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "RadiusAcctDataBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "aws:kms",
+                "KMSMasterKeyID": {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              },
+              "BucketKeyEnabled": true
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "ExpireOldData",
+              "Status": "Enabled",
+              "ExpirationInDays": 1096
+            },
+            {
+              "Id": "AbortIncompleteMultipartUpload",
+              "Status": "Enabled",
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 7
+              }
+            },
+            {
+              "Id": "ArchiveOldData",
+              "Status": "Enabled",
+              "Transitions": [
+                {
+                  "TransitionInDays": 90,
+                  "StorageClass": "STANDARD_IA"
+                },
+                {
+                  "TransitionInDays": 365,
+                  "StorageClass": "GLACIER"
+                }
+              ]
+            }
+          ]
+        },
+        "NotificationConfiguration": {
+          "EventBridgeConfiguration": {
+            "EventBridgeEnabled": true
+          }
+        }
+      }
+    },
+    "RadiusAcctLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "RadiusAcctLambdaRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowKMSAccess",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowCloudWatchLogs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAcctStateMachinePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "StepFunctionsExecutionRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowS3Access",
+              "Effect": "Allow",
+              "Action": [
+                "s3:PutObject",
+                "s3:PutObjectAcl",
+                "s3:GetObject"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": [
+                    "${BucketArn}/*",
+                    {
+                      "BucketArn": {
+                        "Fn::GetAtt": [
+                          "RadiusAcctDataBucket",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "AllowStepFunctionsExecute",
+              "Effect": "Allow",
+              "Action": [
+                "states:StartExecution"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctS3ProcessingStateMachine",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "states:DescribeExecution"
+              ],
+              "Resource": { "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${RadiusAcctS3ProcessingStateMachine}:*" }
+            },
+            {
+              "Sid": "AllowKMSAccess",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            },
+            {
+              "Sid": "AllowFirehoseAccess",
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctFirehose",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "EventBridgeStepFunctionsPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "EventBridgeRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowStepFunctionsExecution",
+              "Effect": "Allow",
+              "Action": [
+                "states:StartExecution"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctS3ProcessingStateMachine",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAcctFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-acct-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusAcctLambdaRoleArn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "LOG_LEVEL": {
+              "Ref": "LambdaLogLevel"
+            },
+            "RADIUS_SHARED_SECRET": "not-so-secret"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "SystemLogLevel": "INFO",
+          "LogGroup": {
+            "Ref": "RadiusAcctFunctionLogGroup"
+          }
+        }
+      }
+    },
+    "RadiusAcctFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-radius-acct"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+    "RadiusAcctFirehosePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "RadiusAcctFirehoseRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctDataBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "${BucketArn}/acct-logs/*",
+                    {
+                      "BucketArn": {
+                        "Fn::GetAtt": [
+                          "RadiusAcctDataBucket",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAcctFirehose": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "Properties": {
+        "DeliveryStreamName": {
+          "Fn::Sub": "${AWS::StackName}-radius-acct-archive"
+        },
+        "DeliveryStreamType": "DirectPut",
+        "S3DestinationConfiguration": {
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "RadiusAcctDataBucket",
+              "Arn"
+            ]
+          },
+          "Prefix": "acct-logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
+          "ErrorOutputPrefix": "acct-logs-errors/",
+          "BufferingHints": {
+            "SizeInMBs": 5,
+            "IntervalInSeconds": 300
+          },
+          "CompressionFormat": "UNCOMPRESSED",
+          "EncryptionConfiguration": {
+            "KMSEncryptionConfig": {
+              "AWSKMSKeyARN": {
+                "Ref": "RadiusKmsKeyArn"
+              }
+            }
+          },
+          "RoleARN": {
+            "Fn::FindInMap": [
+              "GlobalStack",
+              "Outputs",
+              "RadiusAcctFirehoseRoleArn"
+            ]
+          },
+          "CloudWatchLoggingOptions": {
+            "Enabled": true,
+            "LogGroupName": {
+              "Ref": "RadiusAcctFirehoseLogGroup"
+            },
+            "LogStreamName": "delivery-errors"
+          }
+        }
+      }
+    },
+    "RadiusAcctFirehoseLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/kinesisfirehose/${AWS::StackName}-radius-acct-archive"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        },
+        "KmsKeyId": {
+          "Ref": "RadiusKmsKeyArn"
+        }
+      }
+    },
+    "RadiusAcctDestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "RadiusAcctDestinationName"
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::GetAtt": [
+            "RadiusAcctFunction",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "AcctArchiveDestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "AcctArchiveDestinationName"
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::GetAtt": [
+            "RadiusAcctFirehose",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalStack",
+                      "Outputs",
+                      "ProxylityRoleArn"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "lambda:InvokeFunction"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctFunction",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "RadiusAcctFirehose",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAcctS3ProcessingStateMachine": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "Type": "STANDARD",
+        "Role": {
+          "Fn::FindInMap": [
+            "GlobalStack",
+            "Outputs",
+            "StepFunctionsExecutionRoleArn"
+          ]
+        },
+        "Logging": {
+          "Level": "ALL",
+          "IncludeExecutionData": true,
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "RadiusAcctS3ProcessingLogGroup",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "DefinitionUri": "state-machines/radius-acct-s3-processing.asl.json",
+        "DefinitionSubstitutions": {
+          "RADIUS_PARSER_FUNCTION_ARN": {
+            "Ref": "RadiusParserFunctionArn"
+          },
+          "RADIUS_ACCT_DATA_BUCKET": {
+            "Ref": "RadiusAcctDataBucket"
+          }
+        }
+      }
+    },
+    "RadiusAcctS3ProcessingLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/vendedlogs/states/${AWS::StackName}-acct-s3-processing"
+        },
+        "RetentionInDays": {
+          "Ref": "RadiusLogRetentionDays"
+        }
+      }
+    },
+    "RadiusAcctEventBridgeRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-acct-s3-events"
+        },
+        "Description": "Route S3 events for RADIUS accounting data processing",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "Object Created"
+          ],
+          "detail": {
+            "bucket": {
+              "name": [
+                {
+                  "Ref": "RadiusAcctDataBucket"
+                }
+              ]
+            },
+            "object": {
+              "key": [
+                {
+                  "prefix": "acct-logs/"
+                }
+              ]
+            }
+          }
+        },
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "RadiusAcctS3ProcessingTarget",
+            "Arn": {
+              "Fn::GetAtt": [
+                "RadiusAcctS3ProcessingStateMachine",
+                "Arn"
+              ]
+            },
+            "RoleArn": {
+              "Fn::FindInMap": [
+                "GlobalStack",
+                "Outputs",
+                "EventBridgeRoleArn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "RadiusAcctFunctionArn": {
+      "Description": "ARN of the RADIUS accounting Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctFunction",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAcctFunctionName": {
+      "Description": "Name of the RADIUS accounting Lambda function",
+      "Value": {
+        "Ref": "RadiusAcctFunction"
+      }
+    },
+    "RadiusAcctFirehoseArn": {
+      "Description": "ARN of the RADIUS accounting Firehose delivery stream",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctFirehose",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAcctDataBucketName": {
+      "Description": "Name of the S3 bucket for accounting data storage",
+      "Value": {
+        "Ref": "RadiusAcctDataBucket"
+      }
+    },
+    "RadiusAcctDataBucketArn": {
+      "Description": "ARN of the S3 bucket for accounting data storage",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctDataBucket",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAcctS3ProcessingStateMachineArn": {
+      "Description": "ARN of the RADIUS accounting S3 processing state machine",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctS3ProcessingStateMachine",
+          "Arn"
+        ]
+      }
+    }
+  }
+}

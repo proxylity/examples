@@ -1,0 +1,84 @@
+{
+    "Comment": "State machine to process S3 new object events for archived RADIUS accounting data.",
+    "QueryLanguage": "JSONata",
+    "StartAt": "Process Accounting Archive (Gzip'd JSONL)",
+    "States": {
+        "Process Accounting Archive (Gzip'd JSONL)": {
+            "Type": "Map",
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "DISTRIBUTED",
+                    "ExecutionType": "EXPRESS"
+                },
+                "StartAt": "Parse the Packets in this Batch",
+                "States": {
+                    "Parse the Packets in this Batch": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "Output": "{% $states.result.Payload.parsed_packets %}",
+                        "Arguments": {
+                            "FunctionName": "${RADIUS_PARSER_FUNCTION_ARN}",
+                            "Payload": {
+                                "packet_data": "{% $states.input.Items.Data %}"
+                            }
+                        },
+                        "Retry": [
+                            {
+                                "ErrorEquals": [
+                                    "Lambda.ServiceException",
+                                    "Lambda.AWSLambdaException",
+                                    "Lambda.SdkClientException",
+                                    "Lambda.TooManyRequestsException"
+                                ],
+                                "IntervalSeconds": 1,
+                                "MaxAttempts": 3,
+                                "BackoffRate": 2,
+                                "JitterStrategy": "FULL"
+                            }
+                        ],
+                        "Next": "Map"
+                    },
+                    "Map": {
+                        "Type": "Map",
+                        "ItemProcessor": {
+                            "ProcessorConfig": {
+                                "Mode": "INLINE"
+                            },
+                            "StartAt": "Store the Packets in S3 by Session",
+                            "States": {
+                                "Store the Packets in S3 by Session": {
+                                    "Type": "Task",
+                                    "Arguments": {
+                                        "Body": "{% $states.input %}",
+                                        "Bucket": "${RADIUS_ACCT_DATA_BUCKET}",
+                                        "Key": "{% 'sessions/' & $states.input.attributes.'Acct-Session-Id' & '/' & $states.input.attributes.'Event-Timestamp' & '-' & $states.input.identifier & '.json' %}"
+                                    },
+                                    "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+                                    "End": true
+                                }
+                            }
+                        },
+                        "End": true,
+                        "Output": []
+                    }
+                }
+            },
+            "ItemReader": {
+                "Resource": "arn:aws:states:::s3:getObject",
+                "Arguments": {
+                    "Bucket": "{% $states.input.detail.bucket.name %}",
+                    "Key": "{% $states.input.detail.object.key %}"
+                },
+                "ReaderConfig": {
+                    "InputType": "JSONL"
+                }
+            },
+            "MaxConcurrency": 1000,
+            "Label": "ProcessAccountingArchiveGzip'dJSONL",
+            "ItemBatcher": {
+                "MaxItemsPerBatch": 100
+            },
+            "End": true
+        }
+    }
+}

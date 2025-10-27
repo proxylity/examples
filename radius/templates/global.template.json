@@ -1,0 +1,546 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Global resources for a UDP Gateway based RADIUS authorization and accounting service. Deploying this template requires a subscription to UDP Gateway in AWS Marketplace.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describing which IP addresses should be allowed to use the RADIUS listeners. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "ProxylityRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowCloudWatchMetrics",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowPutMetricData",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "RadiusAuthListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-radius-listener"
+        },
+        "Description": "RADIUS authentication listener.",
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Name": {
+              "Fn::Sub": "${AWS::StackName}-RadiusAuth"
+            },
+            "Description": "Handles RADIUS authentication requests and state updates, and produces responses.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "ProxylityRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 50,
+              "TimeoutInSeconds": 0.1
+            },
+            "MetricsEnabled": true
+          },
+          {
+            "Name": {
+              "Fn::Sub": "${AWS::StackName}-AuthArchive"
+            },
+            "Description": "Handles authentication archiving for compliance and auditing",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "ProxylityRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 1000,
+              "TimeoutInSeconds": 1.0
+            },
+            "MetricsEnabled": true
+          }
+        ]
+      }
+    },
+    "RadiusAcctListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-acct-listener"
+        },
+        "Description": "RADIUS accounting listener.",
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Name": {
+              "Fn::Sub": "${AWS::StackName}-RadiusAcct"
+            },
+            "Description": "Handles RADIUS accounting starts, stops and interim updates and produces responses.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "ProxylityRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 0.5
+            },
+            "MetricsEnabled": true
+          },
+          {
+            "Name": {
+              "Fn::Sub": "${AWS::StackName}-AcctArchive"
+            },
+            "Description": "Handles accounting archiving for compliance and analytics",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "ProxylityRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 1000,
+              "TimeoutInSeconds": 1.0
+            },
+            "MetricsEnabled": true
+          }
+        ]
+      }
+    },
+    "RadiusLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "RadiusAuthLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "RadiusAcctLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "RadiusAuthArchiveLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "RadiusAcctArchiveLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "StepFunctionsExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "states.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "AllowLogging",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogDelivery",
+                    "logs:CreateLogStream",
+                    "logs:GetLogDelivery",
+                    "logs:UpdateLogDelivery",
+                    "logs:DeleteLogDelivery",
+                    "logs:ListLogDeliveries",
+                    "logs:PutLogEvents",
+                    "logs:PutResourcePolicy",
+                    "logs:DescribeResourcePolicies",
+                    "logs:DescribeLogGroups"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "EventBridgeRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "events.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "RadiusAcctFirehoseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RadiusAcctFirehoseRoleArn": {
+      "Description": "ARN of the IAM role for Kinesis Firehose to write accounting data to S3",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctFirehoseRole",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusLambdaRoleArn": {
+      "Description": "ARN of the IAM role for RADIUS Lambda functions",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusLambdaRole",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthLambdaRoleArn": {
+      "Description": "ARN of the IAM role for RADIUS authentication Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthLambdaRole",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAcctLambdaRoleArn": {
+      "Description": "ARN of the IAM role for RADIUS accounting Lambda function",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctLambdaRole",
+          "Arn"
+        ]
+      }
+    },
+    "StepFunctionsExecutionRoleArn": {
+      "Description": "ARN of the IAM role for Step Functions execution",
+      "Value": {
+        "Fn::GetAtt": [
+          "StepFunctionsExecutionRole",
+          "Arn"
+        ]
+      }
+    },
+    "EventBridgeRoleArn": {
+      "Description": "ARN of the IAM role for EventBridge",
+      "Value": {
+        "Fn::GetAtt": [
+          "EventBridgeRole",
+          "Arn"
+        ]
+      }
+    },
+    "RadiusAuthListenerId": {
+      "Description": "ID of the RADIUS authentication UDP Gateway listener",
+      "Value": {
+        "Ref": "RadiusAuthListener"
+      }
+    },
+    "RadiusAcctListenerId": {
+      "Description": "ID of the RADIUS accounting UDP Gateway listener",
+      "Value": {
+        "Ref": "RadiusAcctListener"
+      }
+    },
+    "RadiusAuthDestinationName": {
+      "Description": "Name of the RADIUS authentication destination for Lambda function",
+      "Value": {
+        "Fn::Select": [
+          0,
+          {
+            "Fn::GetAtt": [
+              "RadiusAuthListener",
+              "DestinationNames"
+            ]
+          }
+        ]
+      }
+    },
+    "AuthArchiveDestinationName": {
+      "Description": "Name of the authentication archiving destination for Firehose",
+      "Value": {
+        "Fn::Select": [
+          1,
+          {
+            "Fn::GetAtt": [
+              "RadiusAuthListener",
+              "DestinationNames"
+            ]
+          }
+        ]
+      }
+    },
+    "RadiusAcctDestinationName": {
+      "Description": "Name of the RADIUS accounting destination for Lambda function",
+      "Value": {
+        "Fn::Select": [
+          0,
+          {
+            "Fn::GetAtt": [
+              "RadiusAcctListener",
+              "DestinationNames"
+            ]
+          }
+        ]
+      }
+    },
+    "AcctArchiveDestinationName": {
+      "Description": "Name of the accounting archiving destination for Firehose",
+      "Value": {
+        "Fn::Select": [
+          1,
+          {
+            "Fn::GetAtt": [
+              "RadiusAcctListener",
+              "DestinationNames"
+            ]
+          }
+        ]
+      }
+    },
+    "ProxylityRoleArn": {
+      "Description": "ARN of the IAM role assumed by UDP Gateway to delivery packets to Destination resources.",
+      "Value": {
+        "Fn::GetAtt": [
+          "ProxylityRole",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
