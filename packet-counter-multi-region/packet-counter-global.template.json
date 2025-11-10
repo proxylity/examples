@@ -59,22 +59,10 @@
                   ],
                   "Resource": [
                     {
-                      "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:packet-counter"
+                      "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:function:packet-counter"
                     },
                     {
-                      "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:packet-counter:*"
-                    },
-                    {
-                      "Fn::Sub": "arn:aws:lambda:us-east-1:${AWS::AccountId}:function:packet-counter"
-                    },
-                    {
-                      "Fn::Sub": "arn:aws:lambda:us-east-1:${AWS::AccountId}:function:packet-counter:*"
-                    },
-                    {
-                      "Fn::Sub": "arn:aws:lambda:eu-west-1:${AWS::AccountId}:function:packet-counter"
-                    },
-                    {
-                      "Fn::Sub": "arn:aws:lambda:eu-west-1:${AWS::AccountId}:function:packet-counter:*"
+                      "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:function:packet-counter:*"
                     }
                   ]
                 },
@@ -123,7 +111,7 @@
         },
         "Destinations": [
           {
-            "Description": "Delivers to the packet counter lambda using region-sepcific ARNS.  For any region not specified, the 'closest' region with one (by latency, per cloudping.co) will be used.",
+            "Description": "Delivers to the packet counter lambda using region-specific ARNs. All ARNs are mapped in the regional stacks (see packet-counter-regional.template.json).",
             "Role": {
               "Arn": {
                 "Fn::GetAtt": [
@@ -133,21 +121,11 @@
               }
             },
             "Batching": {
-              "Count": 1000,
+              "Count": 10,
               "TimeoutInSeconds": 1
             },
             "MetricsEnabled": true,
-            "DestinationArn": {
-              "us-west-2": {
-                "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:packet-counter"
-              },
-              "us-east-1": {
-                "Fn::Sub": "arn:aws:lambda:us-east-1:${AWS::AccountId}:function:packet-counter"
-              },
-              "eu-west-1": {
-                "Fn::Sub": "arn:aws:lambda:eu-west-1:${AWS::AccountId}:function:packet-counter"
-              }
-            }
+            "DestinationArn": {}
           }
         ]
       }
@@ -170,6 +148,19 @@
     "Endpoint": {
       "Value": {
         "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    },
+    "DestinationId": {
+      "Value": {
+        "Fn::Select": [
+          0,
+          {
+            "Fn::GetAtt": [
+              "UdpListener",
+              "DestinationNames"
+            ]
+          }
+        ]
       }
     }
   }

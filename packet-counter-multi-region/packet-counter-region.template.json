@@ -1,7 +1,25 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
-  "Description": "Creates the regional lambda function connected to a Proxylity UDP listener.",
+  "Description": "Creates the regional lambda function and connects it to the Proxylity UDP Destination.",
+  "Parameters": {
+    "DestinationId": {
+      "Description": "The Proxylity UDP Gateway Destination ID created in the global stack.",
+      "Type": "String"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
   "Resources": {
     "PacketCounterLambda": {
       "Type": "AWS::Serverless::Function",
@@ -42,6 +60,36 @@
               "};"
             ]
           ]
+        }
+      }
+    },
+    "DestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Ref": "DestinationId"
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::GetAtt": [ "PacketCounterLambda", "Arn" ]
         }
       }
     }
