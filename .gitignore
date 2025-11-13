@@ -485,3 +485,12 @@ $RECYCLE.BIN/
 
 # AWS SAM files
 .aws-sam/
+
+# Go vendor directory
+vendor/
+
+# Ignore specific files for packet-counter example
+main
+bootstrap
+outputs.json
+.python-version
