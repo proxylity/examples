@@ -27,16 +27,24 @@ clients<-->listener<-->destination<-->lambda
 
 ## Deploying
 
-> **NOTE**: The instructions below assume the `aws` CLI, `jq` and `ncat` are available on your Linux system. 
+> **NOTE**: The instructions below assume the `aws` CLI, `jq`, `sam` and `ncat` are available on your Linux system.\
+> Also, it is assumed you have an S3 Bucket on AWS for `sam` to work with.\
+> **Go** Version Requirement for this example is `1.23.9`.
+
+To compile binary and setup artifact for deployment:
+
+```bash
+sam build --template-file ./packet-counter.template.json
+```
 
 To deploy the template:
 
 ```bash
-aws cloudformation deploy \
-  --template-file packet-counter.template.json \
-  --stack-name packet-counter-example \
-  --capabilities CAPABILITY_IAM \
-  --region us-west-2
+sam deploy \
+    --stack-name packet-counter-example \
+    --capabilities CAPABILITY_IAM \
+    --region us-west-2 \
+    --s3-bucket <bucket-name>
 ```
 
 Once deployed, the endpoint can be tested with `ncat` and the endpoint information provided in the outputs of the stack. To get the ouputs from the stack and store the salient values in environment variables:
@@ -103,41 +111,49 @@ The output of the Lambda instructs Proxylity what responses, if any, to send in 
 
 The first step in the code is to count the number of packets in the batch that come from the same IP:
 
-```javascript
-const counts_by_src = inbound_packets.Messages.reduce((acc, obj) => {
-  const src = obj.Remote.IpAddress;
-  acc[src] = (acc[src] || 0) + 1;
-  return acc;
-}, {})
+```go
+// Count packets per source IP
+counts := make(map[string]int)
+for _, msg := range inbound.Messages {
+    counts[msg.Remote.IpAddress]++
+}
 ```
 
 The second step is to generate the replies (outbound/response packets), but only send one response per IP.  The code uses a helper function that keeps track of which IPs already have a response by clearing the entry in the map of counts and base64 encoding the response data:
 
-```javascript
-function get_and_clear_count_in_b64(map, key) {
-  const value = map[key];
-  if (value == null) return null;
-  map[key] = null;
-  return btoa(value.toString() + '\\n');
+```go
+// Helper to get & clear count and encode
+getAndClear := func(m map[string]int, key string) *string {
+    value, ok := m[key]
+    if !ok || value == 0 {
+        return nil
+    }
+    m[key] = 0
+    encoded := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d\n", value)))
+    return &encoded
 }
 ```
 
-The list of response packets is then generated via `map`:
+The list of response packets is then generated via a looping function:
 
-```javascript
-const outbound_packets = inbound_packets.Messages.map(function (p) {
-  const d = get_and_clear_count_in_b64(counts_by_src, p.Remote.IpAddress);
-  if (d == null) return null;
-  return {
-    GeneratedAt: new Date().toISOString(),
-    Tag: p.Tag, 
-    Data: d
-  }
-});
+```go
+// Build replies
+var replies []*OutboundPacket
+for _, msg := range inbound.Messages {
+    data := getAndClear(counts, msg.Remote.IpAddress)
+    if data == nil {
+        continue
+    }
+    replies = append(replies, &OutboundPacket{
+        GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+        Tag:         msg.Tag,
+        Data:        *data,
+    })
+}
 ```
 
 And finally, wrapped in the expected `Replies` property to return to Proxylity:
 
-```javascript
-return { Replies: outbound_packets };
+```go
+return Response{Replies: replies}, nil
 ```

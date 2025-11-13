@@ -7,21 +7,6 @@
       "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
       "Type": "String",
       "Default": "0.0.0.0/0"
-    },
-    "CodeUri": {
-      "Description": "The S3 URI or local path to the Lambda deployment package.",
-      "Type": "String",
-      "Default": ""
-    },
-    "LambdaHandler": {
-      "Description": "The S3 URI or local path to the Lambda deployment package.",
-      "Type": "String",
-      "Default": "bootstrap"
-    },
-    "LambdaRuntime": {
-      "Description": "The Lambda runtime to use.",
-      "Type": "String",
-      "Default": "provided.al2023"
     }
   },
   "Mappings": {
@@ -43,13 +28,11 @@
         "Policies": [
           "AWSLambdaBasicExecutionRole"
         ],
-        "Handler": { "Ref": "LambdaHandler" },
+        "Handler": "bootstrap",
         "MemorySize": 1024,
         "Timeout": 10,
-        "Runtime": { "Ref": "LambdaRuntime" },
-        "CodeUri": {
-          "Ref": "CodeUri"
-        }
+        "Runtime": "provided.al2023",
+        "CodeUri": "./src"
       },
       "Metadata": {
         "BuildMethod": "makefile"

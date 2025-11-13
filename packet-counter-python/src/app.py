@@ -60,13 +60,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             Data=msg_data['Data']
         )
         messages.append(message)
-    
+
     # Count packets per source IP
     counts: Dict[str, int] = {}
     for msg in messages:
         ip = msg.Remote.IpAddress
         counts[ip] = counts.get(ip, 0) + 1
-    
+
     # Helper to get & clear count and encode
     def get_and_clear(m: Dict[str, int], key: str) -> Optional[str]:
         value = m.get(key, 0)
@@ -87,7 +87,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             Tag=msg.Tag,
             Data=data
         ))
-    
+
     # Return response
     return {
         'Replies': [

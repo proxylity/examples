@@ -7,18 +7,6 @@
       "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
       "Type": "String",
       "Default": "0.0.0.0/0"
-    },
-    "CodeUri": {
-      "Description": "The S3 URI or local path to the Lambda deployment package.",
-      "Type": "String"
-    },
-    "LambdaHandler": {
-      "Description": "The S3 URI or local path to the Lambda deployment package.",
-      "Type": "String"
-    },
-    "LambdaRuntime": {
-      "Description": "The Lambda runtime to use.",
-      "Type": "String"
     }
   },
   "Mappings": {
@@ -40,17 +28,11 @@
         "Policies": [
           "AWSLambdaBasicExecutionRole"
         ],
-        "Handler": {
-            "Ref": "LambdaHandler"
-        },
+        "Handler": "app.handler",
         "MemorySize": 1024,
         "Timeout": 10,
-        "Runtime": {
-            "Ref": "LambdaRuntime"
-        },
-        "CodeUri": {
-          "Ref": "CodeUri"
-        }
+        "Runtime": "python3.11",
+        "CodeUri": "./src"
       }
     },
     "DestinationRole": {
