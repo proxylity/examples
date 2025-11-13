@@ -39,6 +39,8 @@ aws cloudformation deploy \
   --region us-west-2
 ```
 
+For deployments requiring specific runtimes, refer to [Runtime Specific Deployment](./lambdas/readme.md).
+
 Once deployed, the endpoint can be tested with `ncat` and the endpoint information provided in the outputs of the stack. To get the ouputs from the stack and store the salient values in environment variables:
 
 ```bash

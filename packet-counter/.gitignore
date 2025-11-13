@@ -1,0 +1,5 @@
+vendor/
+main
+bootstrap
+outputs.json
+.python-version
