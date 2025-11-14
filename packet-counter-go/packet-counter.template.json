@@ -1,0 +1,175 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a UDP service using an AWS Lambda Function connected to a Proxylity UDP Listener. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "PacketCounterLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Policies": [
+          "AWSLambdaBasicExecutionRole"
+        ],
+        "Handler": "bootstrap",
+        "MemorySize": 1024,
+        "Timeout": 10,
+        "Runtime": "provided.al2023",
+        "CodeUri": "./src"
+      },
+      "Metadata": {
+        "BuildMethod": "makefile"
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowLambdaInvoke",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Lambda",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "PacketCounterLambda",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Sid": "AllowCloudWatchPutMetricData",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the packet counter lambda, which returns a single response to each distinct client IP address.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 1000,
+              "TimeoutInSeconds": 1
+            },
+            "MetricsEnabled": true,
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "PacketCounterLambda",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    }
+  }
+}
