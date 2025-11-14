@@ -5,6 +5,7 @@ Sends UDP packets to an endpoint and displays responses with count totals by reg
 """
 
 import socket
+import time
 import argparse
 import sys
 from collections import defaultdict
@@ -38,6 +39,8 @@ def send_packets_and_collect_responses(host, port, num_packets=100, timeout=5.0)
             message = f"packet_{i+1}".encode('utf-8')
             sock.sendto(message, sockaddr)
         
+        # Record the time when the last packet was sent
+        last_packet_sent_time = time.perf_counter()
         print(f"Sent {num_packets} packets. Waiting for responses...")
         
         # Collect responses
@@ -47,10 +50,12 @@ def send_packets_and_collect_responses(host, port, num_packets=100, timeout=5.0)
         while True:
             try:
                 data, addr = sock.recvfrom(1024)
+                receive_time = time.perf_counter()
+                elapsed_ms = (receive_time - last_packet_sent_time) * 1000
                 payload = data.decode('utf-8').strip()
                 
-                # Display response details
-                print(f"Response from {addr[0]}:{addr[1]} - Payload: '{payload}'")
+                # Display response details with elapsed time
+                print(f"Response from {addr[0]}:{addr[1]} ({elapsed_ms:.2f}ms) - Payload: '{payload}'")
                 
                 # Parse response (expected format: "count region")
                 try:
