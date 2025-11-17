@@ -22,7 +22,7 @@ From a developer perspective, this architecture consists of a single Listener de
 
 ## Deploying
 
-> **NOTE**: The instructions below assume the `aws` CLI, `jq` and `ncat` are available on your Linux system. 
+> **NOTE**: The instructions below assume the `aws` CLI, `jq` and `ncat` are available on your Linux system (under Windows, WSL2 works great). 
 
 First we create the "global" Listener resource, which is deployed only once. The template includes the Proxylity Listener and Destination (no ARNs assigned), as well as the shaped IAM Role that will be used by Proxylity to access the Lambdas we'll created below:
 
@@ -76,37 +76,39 @@ chmod +x packet_counter_test.py
 That should generate output something like:
 
 ```
-Sending 100 packets to ingress-1.proxylity.com:nnnn (76.223.93.174)...
-Successfully sent 100/100 packets to send buffer.
-Waiting for responses (timeout: 5.0s)...
+Sending 100 packets to ingress-1.proxylity.com:2061...
+Using address family: IPv4
+Target address: 15.197.76.92
+Sent 100 packets. Waiting for responses...
+Response from 15.197.76.92:2061 (83.63ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (86.04ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (86.34ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (86.42ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (86.68ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (86.95ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (87.23ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (87.78ms) - Payload: '10 us-west-2'
+Response from 15.197.76.92:2061 (1109.51ms) - Payload: '7 us-west-2'
+Response from 15.197.76.92:2061 (1143.31ms) - Payload: '8 us-west-2'
+Response from 15.197.76.92:2061 (1143.82ms) - Payload: '5 us-west-2'
 
-============================================================
-RESULTS
-============================================================
+==================================================
+SUMMARY
+==================================================
+Total responses received: 11
 
-Packets attempted: 100
-Packets successfully queued for send: 100
-Packets received (total from responses): 100
-Packets lost in transit: 0
+Packet counts by region:
+  us-west-2: 100 packets
 
-------------------------------------------------------------
-LATENCY BY AWS REGION
-------------------------------------------------------------
-
-Region: us-west-2
-  Responses: 100
-  Min latency: 145.32 ms
-  Max latency: 1187.92 ms
-  Avg latency: 283.31 ms
-
-============================================================
+Total packets counted: 100
+==================================================
 ```
 
-It's very likely all of your responses will be from the same region, you might try deleting that region's stack. You should find that responses then come from the next closest region.
+It's very likely all of your responses will be from the same region unless you have interesting network characteristics. To experience the resilience of this architecture, you might try deleting that region's stack. If you do, you'll find that responses then come from the next closest region with little or no distruption.
 
-You might also find it interesting to adjust the batching parameters (count and time) on the destination in the global template. Adjusting the count higher will result in fewer responses, while reducing the batch time will result in lower latency but a higher number of responses.
+You may also find it interesting to adjust the batching parameters (count and time) on the destination in the global template. Adjusting the count higher will result in fewer responses, while reducing the batch time will result in lower latency but a higher number of responses.  The example output above is typical, showing how "full" batches quickly accrue and are dispatched to your destination while the last ones wait the full configured time or more packets before dispatching the partial capacity.  More details about [batching configuration](https://proxylity.com/docs/destinations/batching-configuration.html) are available in our documentation.
 
-To remove all the regional stacks and the global stack:
+To clean-up, remove all the regional stacks and the global stack:
 ```bash
 for region in us-west-2 us-east-1 eu-west-1; do aws cloudformation delete-stack \
   --stack-name packet-counter-region \
