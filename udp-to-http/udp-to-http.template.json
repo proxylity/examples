@@ -1,0 +1,412 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for integrating UDP Gateway with API Gateway to proxy UDP traffic to REST APIs. Deploying this template requires a subscription to UDP Gateway, available in AWS Marketplace.",
+  "Parameters": {
+    "AdafruitUsername": {
+      "Description": "Adafruit IO username that owns the feed receiving data points.",
+      "Type": "String"
+    },
+    "AdafruitTemperatureFeedKey": {
+      "Description": "Adafruit IO feed key where temperature measurements should be published.",
+      "Type": "String"
+    },
+    "AdafruitHumidityFeedKey": {
+      "Description": "Adafruit IO feed key where humidity measurements should be published.",
+      "Type": "String"
+    },
+    "AdafruitGroupKey": {
+      "Description": "Adafruit IO group key that contains both temperature and humidity feeds.",
+      "Type": "String",
+      "Default": "default"
+    },
+    "AdafruitAioKey": {
+      "Description": "Adafruit IO REST API key. Used to populate the X-AIO-Key header.",
+      "Type": "String",
+      "NoEcho": true
+    },
+    "AdafruitHost": {
+      "Description": "Hostname for Adafruit IO API (override if you self-host).",
+      "Type": "String",
+      "Default": "io.adafruit.com"
+    },
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use this listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowApiGatewayPost",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ApiGateway",
+                  "Effect": "Allow",
+                  "Action": [
+                    "execute-api:Invoke"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OutboundApi}/${OutboundApiStage}/POST/measurements"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "CloudWatch",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the \"inside out\" API Gateway that integrates with external APIs that receive the packet data (see udp-to-http-regional.template.json).",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 0.1
+            },
+            "MetricsEnabled": true,
+            "Formatter": "utf8",
+            "DestinationArn": {}
+          }
+        ]
+      }
+    },
+    "OutboundApi": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "udp-to-http-outbound-api-${AWS::Region}"
+        },
+        "Description": "Inside-out API Gateway that transforms UDP packets before invoking Adafruit IO.",
+        "EndpointConfiguration": {
+          "Types": [
+            "REGIONAL"
+          ]
+        }
+      }
+    },
+    "OutboundApiResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "OutboundApi"
+        },
+        "ParentId": {
+          "Fn::GetAtt": [
+            "OutboundApi",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "measurements"
+      }
+    },
+    "OutboundApiMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "OutboundApi" },
+        "ResourceId": { "Ref": "OutboundApiResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "AWS_IAM",
+        "Integration": {
+          "Type": "HTTP",
+          "IntegrationHttpMethod": "POST",
+          "Uri": { "Fn::Sub": "https://${AdafruitHost}/api/v2/${AdafruitUsername}/groups/${AdafruitGroupKey}/data" },
+          "PassthroughBehavior": "NEVER",
+          "RequestParameters": {
+            "integration.request.header.Content-Type": "'application/json'",
+            "integration.request.header.Accept": "'application/json'",
+            "integration.request.header.X-AIO-Key": { "Fn::Sub": "'${AdafruitAioKey}'" }
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Join": [
+                "\n",
+                [
+                  "#set($body = $input.path('$'))",
+                  "#set($messages = $body.Messages)",
+                  "#set($tags = [])",
+                  "{",
+                  "  \"feeds\": [",
+                  "#foreach($message in $messages)",
+                  { "Fn::Sub": "    {\"key\": \"${AdafruitTemperatureFeedKey}\", \"value\": \"$message.Data.split(' ')[1].trim()\"}," },
+                  { "Fn::Sub": "    {\"key\": \"${AdafruitHumidityFeedKey}\", \"value\": \"$message.Data.split(' ')[2].trim()\"}#if($foreach.hasNext)," },
+                  "#end",
+                  "#set($void = $tags.add($message.Tag))",
+                  "#end",
+                  "",
+                  "  ]",
+                  "}",
+                  "#set($tags_string = \"\")",
+                  "#foreach($tag in $tags)",
+                  "  #if($tag != \"\")",
+                  "    #set($tags_string = \"${tags_string}${tag}\")",
+                  "    #if($foreach.hasNext)#set($tags_string = \"${tags_string},\")#end",
+                  "    #end",
+                  "  #end",
+                  "#set($context.requestOverride.header.X-Proxylity-Tags = $tags_string)"
+                ]
+              ]
+            }
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "SelectionPattern": "2\\d{2}",
+              "ResponseTemplates": {
+                "application/json": {
+                  "Fn::Join": [
+                    "\n",
+                    [
+                      "#set($tagsHeader = $context.requestOverride.header.X-Proxylity-Tags)",
+                      "#set($tags = $tagsHeader.split(\",\"))",
+                      "#set($response = $util.parseJson($input.body))",
+                      "#set($generatedAt = \"\")",
+                      "#if($response.size() > 0)",
+                      "  #set($generatedAt = $response[0].created_at)",
+                      "#end",
+                      "{",
+                      "  \"Replies\": [",
+                      "#foreach($tag in $tags)",
+                      "  #if($tag != \"\")",
+                      "    {",
+                      "      \"Tag\": \"$util.escapeJavaScript($tag)\",",
+                      "      \"GeneratedAt\": \"$generatedAt\",",
+                      "      \"Data\": \"SUCCESS\"",
+                      "    }#if($foreach.hasNext),",
+                      "  #end",
+                      "  #end",
+                      "#end",
+                      "",
+                      "  ]",
+                      "}"
+                    ]
+                  ]
+                }
+              }
+            },
+            {
+              "StatusCode": "500",
+              "SelectionPattern": "[45]\\d{2}",
+              "ResponseTemplates": {
+                "application/json": {
+                  "Fn::Join": [
+                    "\n",
+                    [
+                      "#set($tagsHeader = $context.requestOverride.header.X-Proxylity-Tags)",
+                      "#set($tags = $tagsHeader.split(\",\"))",
+                      "#set($generatedAt = \"\")",
+                      "{",
+                      "  \"Replies\": [",
+                      "#foreach($tag in $tags)",
+                      "  #if($tag != \"\")",
+                      "    {",
+                      "      \"Tag\": \"$util.escapeJavaScript($tag)\",",
+                      "      \"GeneratedAt\": \"$generatedAt\",",
+                      "      \"Data\": \"FAILURE\"",
+                      "    }#if($foreach.hasNext),",
+                      "  #end",
+                      "  #end",
+                      "#end",
+                      "",
+                      "  ]",
+                      "}"
+                    ]
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          },
+          {
+            "StatusCode": "500",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ]
+      }
+    },
+    "OutboundApiDeployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "OutboundApi"
+        },
+        "Description": "Deployment for inside-out Adafruit proxy"
+      },
+      "DependsOn": [
+        "OutboundApiMethod"
+      ]
+    },
+    "OutboundApiStage": {
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "OutboundApi"
+        },
+        "StageName": "adafruit",
+        "DeploymentId": {
+          "Ref": "OutboundApiDeployment"
+        },
+        "MethodSettings": [
+          {
+            "DataTraceEnabled": true,
+            "HttpMethod": "*",
+            "LoggingLevel": "INFO",
+            "MetricsEnabled": true,
+            "ResourcePath": "/*"
+          }
+        ]
+      }
+    },
+    "DestinationArn": {
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Destination": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAtt": [
+                "UdpListener",
+                "DestinationNames"
+              ]
+            }
+          ]
+        },
+        "IngressRegionKey": {
+          "Ref": "AWS::Region"
+        },
+        "Arn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OutboundApi}/${OutboundApiStage}/POST/measurements"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    }
+  }
+}
