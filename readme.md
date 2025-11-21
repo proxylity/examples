@@ -30,6 +30,7 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 * **[Multi-Region Packet Counter](packet-counter-multi-region)** - Demonstrates global UDP processing with region-specific routing and failover capabilities
 * **[Syslog to Cloud](syslog)** - Enterprise-grade log ingestion over UDP, routing to CloudWatch Logs and S3 via Firehose - completely code-free
 * **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
+* **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
 * **[Multi-Modal Workflows](multi-modal)** - Sophisticated example combining HTTP browser interactions with UDP processing and long-running tasks
 * **[DNS Filtering Service](dns-filter)** - Production-ready DNS resolver with domain blocking and redirection capabilities for custom DNS infrastructure
 * **[WireGuard VPN Backend](./wireguard-echo/readme.md)** - Serverless VPN solution supporting UDP echo and ICMP ping through encrypted tunnels
