@@ -1,0 +1,218 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a UDP service using an AWS Lambda Function connected to a Proxylity UDP Listener. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Queue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+      }
+    },
+    "FifoQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowSqs",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Sqs",
+                  "Effect": "Allow",
+                  "Action": [
+                    "sqs:GetQueueUrl",
+                    "sqs:SendMessage"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "Queue",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "FifoQueue",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Sid": "AllowCloudWatchPutMetricData",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the standard queue with default delivery behavior (JSON payload, no attributes).",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 1
+            },
+            "MetricsEnabled": true,
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Queue",
+                "Arn"
+              ]
+            }
+          },
+          {
+            "Description": "Delivers to the FIFO queue with raw payload delivery (UTF-8 format), messages attributes for metadata (source IP/port, domain, ingress port) and the MessageGroupId extracted from the payload (first payload byte as a hex string). MessageDeduplicationId is also extracted from the payload (all but the first byte, base64 encoded).",
+            "Arguments": {
+              "SendRaw": true,
+              "UseMessageAttributes": true,
+              "MessageGroupIdExpression": "[0:1]",
+              "MessageGroupIdFormatter": "hex",
+              "MessageDeduplicationIdExpression": "[1:]",
+              "MessageDeduplicationIdFormatter": "base64"
+            },
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 1
+            },
+            "Formatter": "utf8",
+            "MetricsEnabled": true,
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "FifoQueue",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    },
+    "QueueUrl": {
+      "Value": {
+        "Ref": "Queue"
+      }
+    },
+    "FifoQueueUrl": {
+      "Value": {
+        "Ref": "FifoQueue"
+      }
+    }
+  }
+}
