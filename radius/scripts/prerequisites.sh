@@ -1,5 +1,23 @@
 #!/bin/bash
 
+# Check for AWS CLI installation
+if ! command -v aws &> /dev/null; then
+    echo "AWS CLI not found. Please install and configure it before running this script."
+    return
+fi
+echo "AWS CLI found."
+
+# if DEPLOY_BUCKET_NAME_PREFIX is already set, give the user the option to keept it or clear it and proceed
+if [[ -n "$DEPLOY_BUCKET_NAME_PREFIX" ]]; then
+    read -p "Existing DEPLOY_BUCKET_NAME_PREFIX found: $DEPLOY_BUCKET_NAME_PREFIX. Do you want to keep it? (y/n): " keep_prefix
+    if [[ "$keep_prefix" != "y" ]]; then
+        unset DEPLOY_BUCKET_NAME_PREFIX
+    else
+        echo "Using existing DEPLOY_BUCKET_NAME_PREFIX: $DEPLOY_BUCKET_NAME_PREFIX"
+        return
+    fi
+fi
+
 DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
 read -ra REGIONS <<< "$DEPLOY_TO_REGIONS"
 

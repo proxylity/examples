@@ -47,7 +47,7 @@
         },
         "Policies": [
           {
-            "PolicyName": "AllowCloudWatchMetrics",
+            "PolicyName": "AllowCloudWatch",
             "PolicyDocument": {
               "Version": "2012-10-17",
               "Statement": [
@@ -58,11 +58,28 @@
                     "cloudwatch:PutMetricData"
                   ],
                   "Resource": "*"
+                },
+                {
+                  "Sid": "AllowLogsActions",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "${DestinationLogs.Arn}:*" }
+                  ]
                 }
               ]
             }
           }
         ]
+      }
+    },
+    "DestinationLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 30
       }
     },
     "RadiusAuthListener": {
@@ -116,7 +133,10 @@
               "Count": 50,
               "TimeoutInSeconds": 0.1
             },
-            "MetricsEnabled": true
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "DestinationLogs"
+            }
           },
           {
             "Name": {
@@ -135,7 +155,10 @@
               "Count": 1000,
               "TimeoutInSeconds": 1.0
             },
-            "MetricsEnabled": true
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "DestinationLogs"
+            }
           }
         ]
       }
@@ -191,7 +214,10 @@
               "Count": 100,
               "TimeoutInSeconds": 0.5
             },
-            "MetricsEnabled": true
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "DestinationLogs"
+            }
           },
           {
             "Name": {
@@ -210,7 +236,10 @@
               "Count": 1000,
               "TimeoutInSeconds": 1.0
             },
-            "MetricsEnabled": true
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "DestinationLogs"
+            }
           }
         ]
       }
