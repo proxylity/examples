@@ -26,7 +26,7 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 
 ## Example Solutions
 
-* **[UDP Packet Counter](packet-counter)** - A foundational example implemented in Lambda, with a [Step Functions variant](packet-counter-sfn) showing stateful processing patterns
+* **[UDP Packet Counter](packet-counter)** - A foundational example implemented in Lambda, with a [Step Functions variant](packet-counter-sfn). Also available in [Go](packet-counter-go), [C++](packet-counter-cpp), and [Python](packet-counter-python)
 * **[Multi-Region Packet Counter](packet-counter-multi-region)** - Demonstrates global UDP processing with region-specific routing and failover capabilities
 * **[Syslog to Cloud](syslog)** - Enterprise-grade log ingestion over UDP, routing to CloudWatch Logs and S3 via Firehose - completely code-free
 * **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
