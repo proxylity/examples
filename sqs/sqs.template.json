@@ -33,6 +33,20 @@
         "FifoQueue": true
       }
     },
+    "StandardQueueLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/proxylity/udp-listeners/sqs-standard-queue",
+        "RetentionInDays": 14
+      }
+    },
+    "FifoQueueLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/proxylity/udp-listeners/sqs-fifo-queue",
+        "RetentionInDays": 14
+      }
+    },
     "DestinationRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -66,8 +80,7 @@
                   "Sid": "Sqs",
                   "Effect": "Allow",
                   "Action": [
-                    "sqs:GetQueueUrl",
-                    "sqs:SendMessage"
+                    "sqs:GetQueueUrl"
                   ],
                   "Resource": [
                     {
@@ -91,6 +104,22 @@
                     "cloudwatch:PutMetricData"
                   ],
                   "Resource": "*"
+                },
+                {
+                  "Sid": "AllowLogsPutLogEvents",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "${StandardQueueLogs.Arn}:*"
+                    },
+                    {
+                      "Fn::Sub": "${FifoQueueLogs.Arn}:*"
+                    }
+                  ]
                 }
               ]
             }
@@ -143,6 +172,9 @@
               "TimeoutInSeconds": 1
             },
             "MetricsEnabled": true,
+            "LogGroupName": { 
+              "Ref": "StandardQueueLogs" 
+            },
             "DestinationArn": {
               "Fn::GetAtt": [
                 "Queue",
@@ -174,6 +206,9 @@
             },
             "Formatter": "utf8",
             "MetricsEnabled": true,
+            "LogGroupName": { 
+              "Ref": "FifoQueueLogs" 
+            },
             "DestinationArn": {
               "Fn::GetAtt": [
                 "FifoQueue",
