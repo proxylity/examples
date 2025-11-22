@@ -33,6 +33,7 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 * **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
 * **[Multi-Modal Workflows](multi-modal)** - Sophisticated example combining HTTP browser interactions with UDP processing and long-running tasks
 * **[DNS Filtering Service](dns-filter)** - Production-ready DNS resolver with domain blocking and redirection capabilities for custom DNS infrastructure
+* **[RADIUS Authorization and Accounting](radius)** - Cloud-based RADIUS authentication and accounting system with session state tracking, packet archiving, and multi-region deployment support. Like FreeRADIUS and NPS if they were modern, scalable and had super powers.
 * **[WireGuard VPN Backend](./wireguard-echo/readme.md)** - Serverless VPN solution supporting UDP echo and ICMP ping through encrypted tunnels
 * **[IoT Temperature Sensor](./wireguard-iot-device/README.md)** - End-to-end IoT solution featuring a "Cheap Yellow Display"<sup>[1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)</sup> device with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) sending secure telemetry
 * **[UDP to REST API](./udp-to-http/readme.md)** - Demonstrates using an "inside out" API Gateway to proxy UDP sensor data to [Adafruit IO](https://io.adafruit.io)'s REST API.
