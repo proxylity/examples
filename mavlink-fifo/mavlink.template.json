@@ -142,7 +142,7 @@
             "Arguments": {
               "SendRaw": true,
               "UseMessageAttributes": true,
-              "MessageGroupIdExpression": "[0] = 0xFE ? [3:5] : ([0] = 0xFD ? [5:7] : 0xFFFF)",
+              "MessageGroupIdExpression": "[0] == 0xFE ? [3:5] : ([0] == 0xFD ? [5:7] : 0xFFFF)",
               "MessageGroupIdFormatter": "hex"
             },
             "Role": {
