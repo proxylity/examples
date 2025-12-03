@@ -1,0 +1,210 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for creating a UDP service writing to Amazon Kinesis Data Streams via a Proxylity UDP Listener. Requires Proxylity UDP Gateway subscription.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "CIDR of clients allowed to send packets to the listener.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    },
+    "ShardCount": {
+      "Description": "Number of shards for the stream.",
+      "Type": "Number",
+      "Default": 1
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "KinesisStream": {
+      "Type": "AWS::Kinesis::Stream",
+      "Properties": {
+        "ShardCount": {
+          "Ref": "ShardCount"
+        }
+      }
+    },
+    "KinesisLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/proxylity/udp-listeners/kinesis-streams",
+        "RetentionInDays": 14
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AllowKinesis",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "KinesisPutRecords",
+                  "Effect": "Allow",
+                  "Action": [
+                    "kinesis:PutRecords"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "KinesisStream",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Sid": "AllowCloudWatchPutMetricData",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "AllowLogsPutLogEvents",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "${KinesisLogs.Arn}:*"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Deliver UDP packets to Kinesis Data Streams with dynamic partition key extracted from payload.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 1
+            },
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "KinesisLogs"
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "KinesisStream",
+                "Arn"
+              ]
+            },
+            "Arguments": {
+              "PartitionKeyExpression": "[0:4]",
+              "PartitionKeyExpressionFormatter": "hex"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    },
+    "StreamName": {
+      "Value": {
+        "Ref": "KinesisStream"
+      }
+    },
+    "StreamArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "KinesisStream",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
