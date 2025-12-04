@@ -71,7 +71,7 @@ The repository includes deployment scripts for streamlined deployment accross mu
 . ./scripts/prerequisites.sh
 
 # Run deployment script
-AWS_REGION=us-west-2 ./deploy.sh
+AWS_REGION=us-west-2 ./scripts/deploy.sh
 ```
 
 ### Manual Deployment
