@@ -295,13 +295,22 @@ The authentication state machine uses a DynamoDB table with a single-table desig
 
 ### Creating Test Records
 
-First, get the DynamoDB table name from your deployed stack:
+This stack creates separate DynamoDB tables in each of the `us-west-2`, `us-east-1` and `eu-west-1` regions.  Depending on where you are in the world, authentication requests may reach any of those regional tables for authentication. So, when you're creating new records be sure to do so in the regional table in the region handling your packets. 
+
+To find your region:
 
 ```bash
-# Get the table name from the regional stack outputs
+export RADIUS_REGION=$(echo -e "hello" | nc -u ingress-1.proxylity.com 2061 -w2 | awk '{print $2}')
+```
+
+Next, get the DynamoDB table name from your deployed stack:
+
+```bash
+# Get the table name from the regional stack outputs (change the --region as needed)
 TABLE_NAME=$(aws cloudformation describe-stacks \
-  --stack-name radius-region \
+  --stack-name radius \
   --query "Stacks[0].Outputs[?OutputKey=='RadiusAuthStateTableName'].OutputValue" \
+  --region $RADIUS_REGION \
   --output text)
 
 echo "Table name: $TABLE_NAME"
@@ -320,7 +329,8 @@ aws dynamodb put-item \
     "user_password": {"S": "testpassword"},
     "vlan": {"S": "100"},
     "groups": {"SS": ["employees", "wifi-users"]}
-  }'
+  }' \
+  --region $RADIUS_REGION
 ```
 
 #### Create a MAC Auth Bypass (MAB) Record
@@ -337,7 +347,8 @@ aws dynamodb put-item \
     "is_mac_auth": {"BOOL": true},
     "vlan": {"S": "200"},
     "groups": {"SS": ["iot-devices"]}
-  }'
+  }' \
+  --region $RADIUS_REGION
 ```
 
 **Note:** MAC addresses must be lowercase with no separators (colons, hyphens, or spaces).
@@ -355,7 +366,8 @@ aws dynamodb put-item \
     "session_duration": {"N": "7200"},
     "vlan": {"S": "50"},
     "auto_allow_users": {"SS": ["guest", "admin"]}
-  }'
+  }' \
+  --region $RADIUS_REGION
 ```
 
 #### Create a NAS with Wildcard Auto-Allow
@@ -370,7 +382,8 @@ aws dynamodb put-item \
     "SK": {"S": "#CONFIG"},
     "session_duration": {"N": "1800"},
     "auto_allow_users": {"SS": ["*"]}
-  }'
+  }' \
+  --region $RADIUS_REGION
 ```
 
 ### Verifying Records
@@ -382,7 +395,8 @@ aws dynamodb scan \
   --table-name "$TABLE_NAME" \
   --filter-expression "begins_with(PK, :pk)" \
   --expression-attribute-values '{":pk": {"S": "USER#"}}' \
-  --query "Items[*].{PK: PK.S, Password: user_password.S, VLAN: vlan.S}"
+  --query "Items[*].{PK: PK.S, Password: user_password.S, VLAN: vlan.S}" \
+  --region $RADIUS_REGION
 ```
 
 List all NAS records:
@@ -392,7 +406,8 @@ aws dynamodb scan \
   --table-name "$TABLE_NAME" \
   --filter-expression "begins_with(PK, :pk)" \
   --expression-attribute-values '{":pk": {"S": "NAS#"}}' \
-  --query "Items[*].{PK: PK.S, SessionDuration: session_duration.N, AutoAllow: auto_allow_users.SS}"
+  --query "Items[*].{PK: PK.S, SessionDuration: session_duration.N, AutoAllow: auto_allow_users.SS}" \
+  --region $RADIUS_REGION
 ```
 
 ### Deleting Test Records
@@ -401,12 +416,14 @@ aws dynamodb scan \
 # Delete a user record
 aws dynamodb delete-item \
   --table-name "$TABLE_NAME" \
-  --key '{"PK": {"S": "USER#testuser"}, "SK": {"S": "#CONFIG"}}'
+  --key '{"PK": {"S": "USER#testuser"}, "SK": {"S": "#CONFIG"}}' \
+  --region $RADIUS_REGION
 
 # Delete a NAS record
 aws dynamodb delete-item \
   --table-name "$TABLE_NAME" \
-  --key '{"PK": {"S": "NAS#my-access-point"}, "SK": {"S": "#CONFIG"}}'
+  --key '{"PK": {"S": "NAS#my-access-point"}, "SK": {"S": "#CONFIG"}}' \
+  --region $RADIUS_REGION
 ```
 
 ### Support and Enhancement
