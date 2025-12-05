@@ -25,6 +25,7 @@ aws cloudformation deploy \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides \
         ClientCidrToAllow="${ALLOWED_IPS}" \
+    --no-fail-on-empty-changeset \
     --region ${AWS_REGION}
 
 #
@@ -38,6 +39,7 @@ aws cloudformation describe-stacks \
     --stack-name ${STACK_NAME}-global \
     --query "Stacks[0]" \
     --output json \
+    --region ${AWS_REGION} \
     > ${STACK_NAME}-global.outputs
 
 # Transform the stack output into JSON key/values to make them easier to consume
