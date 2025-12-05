@@ -61,7 +61,9 @@ The regional deployment uses a nested template approach. It creates a CloudWatch
 
 ### Prerequisites
 1. Active subscription to Proxylity UDP Gateway in AWS Marketplace
-2. AWS CLI and SAM CLI configured with appropriate permissions
+2. AWS CLI (`aws`) and SAM CLI (`sam`) configured with appropriate permissions
+3. The .Net SDK version 8 installed
+4. The `make` and `jq` tools installed
 
 ### Using Automated Scripts (Recommended)
 The repository includes deployment scripts for streamlined deployment accross multiple regions:
@@ -254,6 +256,158 @@ region.template.json (Parent)
 - KMS keys are customer-managed with configurable access policies
 - Audit access patterns with CloudTrail (customer responsibility)
 - Implement data classification policies as needed
+
+## Testing Authentication
+
+### DynamoDB Record Schema
+
+The authentication state machine uses a DynamoDB table with a single-table design. The table uses `PK` (partition key) and `SK` (sort key) with patterns to support different record types.
+
+#### Record Types
+
+| Record Type | PK Pattern | SK Pattern | Description |
+|-------------|------------|------------|-------------|
+| User | `USER#<username>` | `#CONFIG` | User credentials and configuration |
+| NAS | `NAS#<nas_identifier>` | `#CONFIG` | Network Access Server configuration |
+| Session | `SESSION#<session_id>` | `<end_timestamp>` | Authentication session records (auto-created) |
+
+#### User Record Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `PK` | String | `USER#<username>` - Username or MAC address (lowercase, no separators for MAC) |
+| `SK` | String | `#CONFIG` - Fixed value for user configuration records |
+| `user_password` | String | Password for PAP auth, or MAC address for MAC auth |
+| `vlan` | String | (Optional) VLAN to assign to authenticated user |
+| `groups` | String Set | (Optional) Group memberships returned as RADIUS Class attribute |
+| `is_mac_auth` | Boolean | (Optional) Indicates if this is a MAC auth record |
+| `TTL` | Number | (Optional) Unix timestamp for record expiration |
+
+#### NAS Record Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `PK` | String | `NAS#<nas_identifier>` - NAS-Identifier from RADIUS request |
+| `SK` | String | `#CONFIG` - Fixed value for NAS configuration records |
+| `session_duration` | Number | Session timeout in seconds (default: 3600) |
+| `vlan` | String | (Optional) Default VLAN for users authenticating via this NAS |
+| `auto_allow_users` | String Set | (Optional) Usernames or `*` to auto-accept without password verification |
+
+### Creating Test Records
+
+First, get the DynamoDB table name from your deployed stack:
+
+```bash
+# Get the table name from the regional stack outputs
+TABLE_NAME=$(aws cloudformation describe-stacks \
+  --stack-name radius-region \
+  --query "Stacks[0].Outputs[?OutputKey=='RadiusAuthStateTableName'].OutputValue" \
+  --output text)
+
+echo "Table name: $TABLE_NAME"
+```
+
+#### Create a PAP/CHAP User Record
+
+Create a user that authenticates with username/password (PAP):
+
+```bash
+aws dynamodb put-item \
+  --table-name "$TABLE_NAME" \
+  --item '{
+    "PK": {"S": "USER#testuser"},
+    "SK": {"S": "#CONFIG"},
+    "user_password": {"S": "testpassword"},
+    "vlan": {"S": "100"},
+    "groups": {"SS": ["employees", "wifi-users"]}
+  }'
+```
+
+#### Create a MAC Auth Bypass (MAB) Record
+
+Create a MAC address record for devices that authenticate using their MAC address:
+
+```bash
+aws dynamodb put-item \
+  --table-name "$TABLE_NAME" \
+  --item '{
+    "PK": {"S": "USER#aabbccddeeff"},
+    "SK": {"S": "#CONFIG"},
+    "user_password": {"S": "aabbccddeeff"},
+    "is_mac_auth": {"BOOL": true},
+    "vlan": {"S": "200"},
+    "groups": {"SS": ["iot-devices"]}
+  }'
+```
+
+**Note:** MAC addresses must be lowercase with no separators (colons, hyphens, or spaces).
+
+#### Create a NAS Configuration Record
+
+Configure a NAS device with custom session duration and auto-allow rules:
+
+```bash
+aws dynamodb put-item \
+  --table-name "$TABLE_NAME" \
+  --item '{
+    "PK": {"S": "NAS#my-access-point"},
+    "SK": {"S": "#CONFIG"},
+    "session_duration": {"N": "7200"},
+    "vlan": {"S": "50"},
+    "auto_allow_users": {"SS": ["guest", "admin"]}
+  }'
+```
+
+#### Create a NAS with Wildcard Auto-Allow
+
+Configure a NAS that accepts all users without password verification:
+
+```bash
+aws dynamodb put-item \
+  --table-name "$TABLE_NAME" \
+  --item '{
+    "PK": {"S": "NAS#open-access-point"},
+    "SK": {"S": "#CONFIG"},
+    "session_duration": {"N": "1800"},
+    "auto_allow_users": {"SS": ["*"]}
+  }'
+```
+
+### Verifying Records
+
+List all user records in the table:
+
+```bash
+aws dynamodb scan \
+  --table-name "$TABLE_NAME" \
+  --filter-expression "begins_with(PK, :pk)" \
+  --expression-attribute-values '{":pk": {"S": "USER#"}}' \
+  --query "Items[*].{PK: PK.S, Password: user_password.S, VLAN: vlan.S}"
+```
+
+List all NAS records:
+
+```bash
+aws dynamodb scan \
+  --table-name "$TABLE_NAME" \
+  --filter-expression "begins_with(PK, :pk)" \
+  --expression-attribute-values '{":pk": {"S": "NAS#"}}' \
+  --query "Items[*].{PK: PK.S, SessionDuration: session_duration.N, AutoAllow: auto_allow_users.SS}"
+```
+
+### Deleting Test Records
+
+```bash
+# Delete a user record
+aws dynamodb delete-item \
+  --table-name "$TABLE_NAME" \
+  --key '{"PK": {"S": "USER#testuser"}, "SK": {"S": "#CONFIG"}}'
+
+# Delete a NAS record
+aws dynamodb delete-item \
+  --table-name "$TABLE_NAME" \
+  --key '{"PK": {"S": "NAS#my-access-point"}, "SK": {"S": "#CONFIG"}}'
+```
 
 ### Support and Enhancement
 For questions about extending this implementation, please reach out to [Proxylity Support](mailto:support@proxylity.com).
