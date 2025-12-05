@@ -570,6 +570,18 @@
           "Arn"
         ]
       }
+    },
+    "AuthEndpoint": {
+      "Description": "RADIUS Authentication Endpoint",
+      "Value": {
+        "Fn::Sub": "${RadiusAuthListener.Domain}.proxylity.com:${RadiusAuthListener.Port}"
+      }
+    },
+    "AcctEndpoint": {
+      "Description": "RADIUS Accounting Endpoint",
+      "Value": {
+        "Fn::Sub": "${RadiusAcctListener.Domain}.proxylity.com:${RadiusAcctListener.Port}"
+      }
     }
   }
 }
