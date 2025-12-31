@@ -1,12 +1,10 @@
 ## WireGuard Echo and Ping
 
-This example shows how traffic to UDP Gateway can be protected with the modern, strong encryption provided by WireGuard. It demonstrates how to create a WireGuard protocol Listener and implement a Lambda destination using the [UDP Gateway Lambda SDK for .Net](https://github.com/proxylity/lambda-sdk-net), including using Ahead of Time (AoT) compilation and source generation for JSON serialization (for highest performance and minimal cold starts).
+This example shows how UDP Gateway can protect communications with WireGuard's modern and strong encryption. The code demonstrates creating a WireGuard Listener and a Lambda destination. The Lambda function uses the [UDP Gateway Lambda SDK for .Net](https://github.com/proxylity/lambda-sdk-net) and is optimized with AoT compilation. In this example all IP traffic is handled by the Lambda (not just UDP), and the Lambda function implements ICMP ping, UDP echo and NTP time synchronization. This how simple it is to add multiple capabilities to WireGaurd protected services on UDP Gateway.
 
-When a WireGuard listener is created, UDP Gateway automatically generates a private key and keeps it as an internal secret. The derived public key is returned as a template output (see the [template](./wireguard.template.json)), which can be used to configure your client applications/networks. Peers are configured as a part of the Listener resource and can be managed as any other Infrastructure as Code.
+When a WireGuard listener is created, UDP Gateway automatically generates a private key and keeps it as an internal secret (never disclosed or shared). The derived public key is returned as a template output (see the [template](./wireguard.template.json)), which can be used to configure your client applications/networks. Peers are configured as a part of the Listener resource and can be managed as any other Infrastructure as Code. 
 
-In this example all tunneled IP traffic is handled by the Lambda (not just UDP). This example implements ICMP ping and UDP echo, showing the fine-grained control available with WireGaurd protected services on UDP Gateway. General "VPN like" capabilities can be acheived by placing a lambda on a VPC and developing a Lambda that acts as a router for the traffic. 
-
-The walk-through below demonstrates deploying this example and testing it using `wg-quick` and `ncat`.
+The walk-through below demonstrates deploying this example and testing it using `wg-quick` and `ncat`.  You can also use this example with the [WireGuard IoT example](../wireguard-iot-device/README.md) that connects to it from an ESP32 device.
 
 This example demonstrates:
 
