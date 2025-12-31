@@ -104,6 +104,14 @@ int wg_peer_port = 1234;
 IPAddress remote_vpn_ip(10, 10, 10, 10);
 int remote_vpn_port = 1010;
 
+bool wg_connected = false;
+
+String public_ntp_server = "pool.ntp.org";
+String wg_ntp_server = "10.10.10.10";
+
+unsigned long last_ntp_sync = millis();
+unsigned long ntp_sync_interval = 15 * 60 * 1000; // 15 minutes
+
 // Touchscreen coordinates: (x, y) and pressure (z)
 int x, y, z;
 
@@ -421,16 +429,24 @@ void wifi_connected() {
   state = STATE_WIFI_CONNECTED;
 }
 
-void configure_time() {
-  configTime(0, 0, "pool.ntp.org");
+void synchronize_time() {
+  if (wg_connected) {
+    configTime(0, 0, wg_ntp_server.c_str());
+  } else {
+    configTime(0, 0, public_ntp_server.c_str());
+  }
   setenv("TZ","PST8PDT,M3.2.0,M11.1.0",1);
   tzset();
 
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
     Serial.println("Failed to obtain time in clock_cb");
-    return;
   }
+  last_ntp_sync = millis();
+}
+
+void configure_time() {
+  synchronize_time();
 
   String s = "Time synchronized.";
   lv_label_set_text(text_label, s.c_str());
@@ -459,6 +475,7 @@ void wireguard_connected() {
   s += ssid;
   s += ".";
   lv_label_set_text(text_label, s.c_str());
+  wg_connected = true;
   state = STATE_WIREGUARD_CONNECTED;
 }
 
@@ -679,6 +696,9 @@ void loop() {
       receive_udp();
       if (send_data && millis() - last_send > send_interval) {
         send_udp();
+      }
+      if (millis() - last_ntp_sync > ntp_sync_interval) {
+        synchronize_time();
       }
       break;
 
