@@ -17,6 +17,6 @@
     <PackageReference Include="Amazon.Lambda.Core" Version="2.6.0" />
     <PackageReference Include="Amazon.Lambda.RuntimeSupport" Version="1.13.1" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.0" />
-    <PackageReference Include="Proxylity.UdpGateway.LambdaSdk" Version="0.0.1" />
+    <PackageReference Include="Proxylity.UdpGateway.LambdaSdk" Version="1.0.1" />
   </ItemGroup>
 </Project>
