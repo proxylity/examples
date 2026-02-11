@@ -1,4 +1,4 @@
-# CYD IoT Demo Device
+# WireGuard Protected IoT Sensor Data
 
 This project demonstrates an IoT use case for the Proxylity UDP Gateway using the "Cheap Yellow Display" (CYD) board. It combines temperature sensing, a touch GUI (LVGL), and secure UDP transport over a WireGuard tunnel. You can configure the device to use a WireGuard backend of your choice, including the [wireguard-echo](../wireguard-echo/readme.md) project also found in this repo.
 

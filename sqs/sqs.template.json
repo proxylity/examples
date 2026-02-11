@@ -80,7 +80,8 @@
                   "Sid": "Sqs",
                   "Effect": "Allow",
                   "Action": [
-                    "sqs:GetQueueUrl"
+                    "sqs:GetQueueUrl",
+                    "sqs:SendMessage"
                   ],
                   "Resource": [
                     {

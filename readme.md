@@ -35,12 +35,12 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 * **[DNS Filtering Service](dns-filter)** - Production-ready DNS resolver with domain blocking and redirection capabilities for custom DNS infrastructure
 * **[RADIUS Authorization and Accounting](radius)** - Cloud-based RADIUS authentication and accounting system with session state tracking, packet archiving, and multi-region deployment support. Like FreeRADIUS and NPS if they were modern, scalable and had super powers.
 * **[WireGuard VPN Backend](./wireguard-echo/readme.md)** - Serverless VPN solution supporting UDP echo and ICMP ping through encrypted tunnels
-* **[IoT Temperature Sensor](./wireguard-iot-device/README.md)** - End-to-end IoT solution featuring a "Cheap Yellow Display"<sup>[1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)</sup> device with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) sending secure telemetry
+* **[IoT Temperature Display/Sensor](./wireguard-iot-device/README.md)** - IoT device based on a "Cheap Yellow Display"<sup>[1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)</sup> with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) protected telemetry and time synchronization (NTP)
 * **[UDP to REST API](./udp-to-http/readme.md)** - Demonstrates using an "inside out" API Gateway to proxy UDP sensor data to [Adafruit IO](https://io.adafruit.io)'s REST API.
 
 ---
 
-## Ready to Build Serverless UDP Solutions?
+## Ready to Build a Serverless UDP Solution?
 
 Transform your UDP architecture today with Proxylity UDP Gateway. Get started with a free trial, or on the free tier and see how serverless UDP can simplify your infrastructure while reducing costs.
 
