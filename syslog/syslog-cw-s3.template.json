@@ -1,12 +1,16 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
-  "Description": "Example logging service using Proxylity UDP Gateway, a simple lambda function and state machine.",
+  "Description": "Enterprise syslog collection service using Proxylity UDP Gateway (WireGuard), Kinesis Firehose, CloudWatch Logs, and S3 with WORM archival.",
   "Parameters": {
     "ClientCidrToAllow": {
-      "Description": "The CIDR describine which IP addresses should be allowed to use this listener. Default is open/everyone.",
+      "Description": "The CIDR restricting which IP addresses (WireGuard peer endpoints) may connect to the listener. Default is open/everyone. WireGuard cryptographic peer authentication is the primary access control; this provides an additional network-layer restriction.",
       "Type": "String",
       "Default": "0.0.0.0/0"
+    },
+    "PeerPublicKey": {
+      "Description": "WireGuard public key for the first peer (e.g. your network gateway or router). Generate with: wg genkey | tee site1.key | wg pubkey > site1.pub. Additional peers can be added by editing the Peers list in the SyslogListener resource.",
+      "Type": "String"
     },
     "LogGroupRetentionInDays": {
       "Description": "The number of days to retain logs in CloudWatch.",
@@ -27,6 +31,16 @@
       "Description": "The number of days to rotate the KMS key used to encrypt log objects in S3.",
       "Type": "Number",
       "Default": 365
+    },
+    "AlarmEmail": {
+      "Description": "Optional email address to notify when a high-severity syslog alarm fires or when no messages are received for an extended period. Leave blank to provision the SNS topic without an email subscription.",
+      "Type": "String",
+      "Default": ""
+    }
+  },
+  "Conditions": {
+    "HasAlarmEmail": {
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AlarmEmail" }, "" ] } ]
     }
   },
   "Mappings": {
@@ -130,6 +144,18 @@
       "Properties": {
         "BucketName": {
           "Fn::Sub": "${AWS::StackName}-${AWS::Region}"
+        },
+        "ObjectLockEnabled": true,
+        "ObjectLockConfiguration": {
+          "ObjectLockEnabled": "Enabled",
+          "Rule": {
+            "DefaultRetention": {
+              "Mode": "GOVERNANCE",
+              "Days": {
+                "Ref": "LogArchiveExpirationInDays"
+              }
+            }
+          }
         },
         "BucketEncryption": {
           "ServerSideEncryptionConfiguration": [
@@ -353,6 +379,34 @@
         }
       }
     },
+    "AlarmTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "${AWS::StackName}-syslog-alarms"
+        }
+      }
+    },
+    "AlarmTopicSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Condition": "HasAlarmEmail",
+      "Properties": {
+        "TopicArn": { "Ref": "AlarmTopic" },
+        "Protocol": "email",
+        "Endpoint": { "Ref": "AlarmEmail" }
+      }
+    },
+    "DestinationErrorLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/proxylity-examples/syslog-destination-errors-${AWS::StackName}"
+        },
+        "RetentionInDays": {
+          "Ref": "LogGroupRetentionInDays"
+        }
+      }
+    },
     "Logs": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -362,6 +416,72 @@
         "RetentionInDays": {
           "Ref": "LogGroupRetentionInDays"
         }
+      }
+    },
+    "HighSeverityMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": { "Ref": "Logs" },
+        "FilterPattern": "?emerg ?alert ?crit",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": { "Fn::Sub": "${AWS::StackName}/Syslog" },
+            "MetricName": "HighSeverityCount",
+            "MetricValue": "1",
+            "DefaultValue": 0,
+            "Unit": "Count"
+          }
+        ]
+      }
+    },
+    "MessageVolumeMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": { "Ref": "Logs" },
+        "FilterPattern": "",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": { "Fn::Sub": "${AWS::StackName}/Syslog" },
+            "MetricName": "MessageCount",
+            "MetricValue": "1",
+            "DefaultValue": 0,
+            "Unit": "Count"
+          }
+        ]
+      }
+    },
+    "HighSeverityAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-syslog-high-severity" },
+        "AlarmDescription": "One or more syslog messages with severity emerg, alert, or crit were received. Investigate immediately.",
+        "Namespace": { "Fn::Sub": "${AWS::StackName}/Syslog" },
+        "MetricName": "HighSeverityCount",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [ { "Ref": "AlarmTopic" } ],
+        "OKActions": [ { "Ref": "AlarmTopic" } ]
+      }
+    },
+    "PipelineSilenceAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-syslog-pipeline-silence" },
+        "AlarmDescription": "No syslog messages have been received for 1 hour. The pipeline may be down or all sites may have lost connectivity to the listener.",
+        "Namespace": { "Fn::Sub": "${AWS::StackName}/Syslog" },
+        "MetricName": "MessageCount",
+        "Statistic": "Sum",
+        "Period": 3600,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching",
+        "AlarmActions": [ { "Ref": "AlarmTopic" } ],
+        "OKActions": [ { "Ref": "AlarmTopic" } ]
       }
     },
     "DestinationRole": {
@@ -423,6 +543,12 @@
                     },
                     {
                       "Fn::Sub": "${Logs.Arn}/*"
+                    },
+                    {
+                      "Fn::Sub": "${DestinationErrorLogs.Arn}"
+                    },
+                    {
+                      "Fn::Sub": "${DestinationErrorLogs.Arn}/*"
                     }
                   ]
                 }
@@ -452,7 +578,19 @@
           ]
         },
         "Protocols": [
-          "udp"
+          "wg"
+        ],
+        "DecapsulatedDelivery": true,
+        "Peers": [
+          {
+            "PublicKey": {
+              "Ref": "PeerPublicKey"
+            },
+            "AllowedIPs": [
+              "0.0.0.0/0",
+              "::/0"
+            ]
+          }
         ],
         "ClientRestrictions": {
           "Networks": [
@@ -477,6 +615,9 @@
               "Count": 1000,
               "TimeoutInSeconds": 30
             },
+            "LogGroupName": {
+              "Ref": "DestinationErrorLogs"
+            },
             "DestinationArn": {
               "Fn::GetAtt": [
                 "Firehose",
@@ -498,6 +639,9 @@
             "Batching": {
               "Count": 10,
               "TimeoutInSeconds": 10
+            },
+            "LogGroupName": {
+              "Ref": "DestinationErrorLogs"
             },
             "DestinationArn": {
               "Fn::GetAtt": [
@@ -533,6 +677,23 @@
           "Port"
         ]
       }
+    },
+    "ListenerPublicKey": {
+      "Description": "The WireGuard public key of the listener. Provide this to each peer in its [Peer] configuration as PublicKey.",
+      "Value": {
+        "Fn::GetAtt": [
+          "SyslogListener",
+          "WireGuardPublicKey"
+        ]
+      }
+    },
+    "AlarmTopicArn": {
+      "Description": "SNS topic ARN for syslog alarms. Subscribe additional endpoints (email, Lambda, PagerDuty, etc.) to this topic.",
+      "Value": { "Ref": "AlarmTopic" }
+    },
+    "DestinationErrorLogGroup": {
+      "Description": "CloudWatch log group for Proxylity destination delivery errors.",
+      "Value": { "Ref": "DestinationErrorLogs" }
     }
   }
 }
