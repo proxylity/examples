@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CacheProxy/CacheProxy.csproj" />
+    <Project Path="src/SDK/SDK.csproj" />
+    <Project Path="src/Tester/Tester.csproj" />
+  </Folder>
+</Solution>

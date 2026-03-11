@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- .NET 8 is required for the managed dotnet8 Lambda runtime -->
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <!-- Executable entry-point model: LambdaBootstrapBuilder drives the runtime loop.
+         Handler in template.yaml is "bootstrap", which matches this assembly name.
+         This approach works on both the managed dotnet8 runtime and provided.al2023 (NativeAOT). -->
+    <AssemblyName>bootstrap</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MomentoUdpCache.CacheProxy</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Amazon.Lambda.Core"                        Version="2.5.0" />
+    <PackageReference Include="Amazon.Lambda.RuntimeSupport"              Version="1.12.0" />
+    <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.4" />
+    <PackageReference Include="Momento.Sdk"                               Version="1.41.1" />
+  </ItemGroup>
+
+</Project>

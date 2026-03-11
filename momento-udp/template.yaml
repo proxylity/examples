@@ -1,0 +1,291 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Momento Cache UDP API -- single Lambda, Momento .NET SDK, gRPC multiplexing.
+
+  WIRE PROTOCOL (UTF-8, newline-delimited)
+  ========================================
+  reqId is the first field in both request and response packets.
+
+  Requests:  "{reqId}\nGET\n{key}"
+             "{reqId}\nSET\n{key}\n{ttlSeconds}\n{base64value}"
+             "{reqId}\nDEL\n{key}"
+
+  Responses: "{reqId}\nHIT\n{base64value}"
+             "{reqId}\nMISS"
+             "{reqId}\nOK"
+             "{reqId}\nERR\n{message}"
+
+  FORMATTER: utf8
+  ===============
+  The Destination uses Formatter: utf8, so Proxylity delivers
+  RequestPacket.Data as a plain UTF-8 string and expects ResponsePacket.Data
+  to be a plain UTF-8 string.
+
+  BATCH ALIGNMENT
+  ===============
+  BatchCount controls how many UDP packets Proxylity groups per Lambda
+  invocation. Task.WhenAll fans all N packets out as concurrent Momento
+  gRPC calls over the SDK's persistent channel.
+
+Parameters:
+  MomentoCacheName:
+    Type: String
+    Default: udp-demo
+
+  MomentoApiKeyParam:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /momento-udp-cache/api-key
+
+  BatchCount:
+    Type: Number
+    Default: 25
+    Description: >
+      UDP packets per Lambda invocation. Becomes Task.WhenAll(N x SDK call).
+      All N Momento gRPC calls are in flight concurrently per invocation.
+
+  BatchTimeoutSeconds:
+    Type: Number
+    Default: 0.05
+    Description: >
+      Max seconds Proxylity waits to fill a batch before firing regardless
+      of count. Keep low to bound tail latency at low request rates.
+
+  ClientCidrToAllow:
+    Type: String
+    Default: 0.0.0.0/0
+
+  ListenerType:
+    Type: String
+    Default: both
+    AllowedValues: [udp, wireguard, both]
+    Description: >
+      Which listener(s) to create.
+      udp       - plain UDP only (default behavior)
+      wireguard - WireGuard-encrypted listener only
+      both      - both listeners sharing the same Lambda
+
+  WireGuardClientPublicKey:
+    Type: String
+    Default: ""
+    Description: >
+      Base64-encoded 32-byte WireGuard public key of the client peer.
+      Required when ListenerType is wireguard or both.
+
+Conditions:
+  CreateUdpListener: !Or
+    - !Equals [!Ref ListenerType, udp]
+    - !Equals [!Ref ListenerType, both]
+  CreateWgListener: !Or
+    - !Equals [!Ref ListenerType, wireguard]
+    - !Equals [!Ref ListenerType, both]
+
+Globals:
+  Function:
+    Runtime: dotnet8
+    Architectures: [arm64]
+    MemorySize: 1024
+    Timeout: 10
+    Environment:
+      Variables:
+        MOMENTO_API_KEY:    !Ref MomentoApiKeyParam
+        MOMENTO_CACHE_NAME: !Ref MomentoCacheName
+
+Mappings:
+  ProxylityConfig:
+    Fn::Transform:
+      Name: AWS::Include
+      Parameters:
+        Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+
+Resources:
+
+  # ==========================================================================
+  #  CacheProxy Lambda
+  # ==========================================================================
+
+  CacheProxyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-cache-proxy"
+      CodeUri: src/CacheProxy/
+      Handler: bootstrap
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  CacheProxyDestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                Fn::FindInMap:
+                  - ProxylityConfig
+                  - Ref: AWS::Region
+                  - ServiceRole
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeCacheProxy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt CacheProxyFunction.Arn
+
+  # ==========================================================================
+  #  Single Proxylity Listener
+  #
+  #  One listener handles all three operations. The Formatter: utf8 on the
+  #  Destination means packet payloads are delivered to Lambda as plain UTF-8
+  #  strings in RequestPacket.Data, and the Lambda returns plain UTF-8 strings
+  #  in ResponsePacket.Data -- no base64 envelope in either direction.
+  # ==========================================================================
+
+  CacheListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    Condition: CreateUdpListener
+    Properties:
+      ServiceToken:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Ref: AWS::Region
+          - ServiceToken
+      ApiKey:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Account
+          - ApiKey
+      Protocols: [udp]
+      ClientRestrictions:
+        Networks: [!Ref ClientCidrToAllow]
+      Destinations:
+        - Role: !GetAtt CacheProxyDestinationRole.Arn
+          DestinationArn: !GetAtt CacheProxyFunction.Arn
+          Formatter: utf8
+          Batching:
+            Count:            !Ref BatchCount
+            TimeoutInSeconds: !Ref BatchTimeoutSeconds
+          MetricsEnabled: true
+
+  # ==========================================================================
+  #  WireGuard Listener
+  #
+  #  Proxylity terminates the WireGuard handshake and decrypts traffic.
+  #  DecapsulatedDelivery: true strips the tunnel headers so the Lambda
+  #  receives identical UTF-8 wire protocol payloads as from the plain UDP
+  #  listener -- no Lambda code changes required.
+  #  The Listener auto-generates a key pair; retrieve the public key via
+  #  the WireGuardPublicKey stack output for use in WgCacheClient.
+  # ==========================================================================
+
+  CacheListenerWg:
+    Type: Custom::ProxylityUdpGatewayListener
+    Condition: CreateWgListener
+    Properties:
+      ServiceToken:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Ref: AWS::Region
+          - ServiceToken
+      ApiKey:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Account
+          - ApiKey
+      Protocols: [wg]
+      Peers:
+        - PublicKey: !Ref WireGuardClientPublicKey
+          AllowedIPs:
+            - 0.0.0.0/0
+            - ::/0
+      DecapsulatedDelivery: true
+      Destinations:
+        - Role: !GetAtt CacheProxyDestinationRole.Arn
+          DestinationArn: !GetAtt CacheProxyFunction.Arn
+          Formatter: utf8
+          Batching:
+            Count:            !Ref BatchCount
+            TimeoutInSeconds: !Ref BatchTimeoutSeconds
+          MetricsEnabled: true
+
+  # ==========================================================================
+  #  Observability
+  # ==========================================================================
+
+  BenchmarkDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AWS::StackName}-performance"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "properties": {
+                "markdown": "# Momento UDP Cache\n\nOne listener, one Lambda, one gRPC channel.\n\n| BatchCount | Task.WhenAll width | Formatter |\n|---|---|---|\n| ${BatchCount} | ${BatchCount} concurrent Momento calls | utf8 (plain text Data) |\n\nProtocol: `{reqId}\\n{op}\\n{key}[\\n{ttl}\\n{b64val}]` in both directions."
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "title": "Lambda Duration -- p50 / p95 / p99 (ms)",
+                "metrics": [
+                  ["AWS/Lambda","Duration","FunctionName","${CacheProxyFunction}",{"stat":"p50","label":"p50"}],
+                  ["AWS/Lambda","Duration","FunctionName","${CacheProxyFunction}",{"stat":"p95","label":"p95"}],
+                  ["AWS/Lambda","Duration","FunctionName","${CacheProxyFunction}",{"stat":"p99","label":"p99"}]
+                ],
+                "period": 60,
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "title": "Lambda Invocations, Errors & Concurrency",
+                "metrics": [
+                  ["AWS/Lambda","Invocations","FunctionName","${CacheProxyFunction}",{"stat":"Sum","label":"Invocations"}],
+                  ["AWS/Lambda","Errors","FunctionName","${CacheProxyFunction}",{"stat":"Sum","label":"Errors"}],
+                  ["AWS/Lambda","ConcurrentExecutions","FunctionName","${CacheProxyFunction}",{"stat":"Maximum","label":"Max Concurrency"}]
+                ],
+                "period": 60,
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "title": "Cold start: Init Duration (ms)",
+                "metrics": [
+                  ["AWS/Lambda","InitDuration","FunctionName","${CacheProxyFunction}",{"stat":"p50","label":"p50"}],
+                  ["AWS/Lambda","InitDuration","FunctionName","${CacheProxyFunction}",{"stat":"p99","label":"p99"}]
+                ],
+                "period": 300,
+                "view": "timeSeries"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  CacheEndpoint:
+    Condition: CreateUdpListener
+    Description: Plain UDP endpoint for GET, SET, and DEL
+    Value: !Sub "${CacheListener.Domain}:${CacheListener.Port}"
+
+  CacheEndpointWg:
+    Condition: CreateWgListener
+    Description: WireGuard endpoint for GET, SET, and DEL (encrypted)
+    Value: !Sub "${CacheListenerWg.Domain}:${CacheListenerWg.Port}"
+
+  WireGuardPublicKey:
+    Condition: CreateWgListener
+    Description: Listener WireGuard public key -- pass to WgCacheClient as peerPublicKey
+    Value: !GetAtt CacheListenerWg.WireGuardPublicKey
+
+  DashboardUrl:
+    Description: CloudWatch performance dashboard
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home#dashboards:name=${BenchmarkDashboard}"
