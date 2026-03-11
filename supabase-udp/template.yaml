@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Supabase UDP Bridge — routes UDP packets from Proxylity to a Supabase Edge
+  Function via API Gateway with no Lambda on the hot path. A Step Functions
+  loop rotates a short-lived HS256 JWT into the SUPABASE_JWT stage variable;
+  the VTL template injects it as the Authorization header on every request.
+
+  DEPLOYMENT ORDER
+  ================
+  1. Deploy Supabase assets:  scripts/1-deploy-supabase.sh
+  2. Deploy AWS stack:        scripts/2-deploy-aws.sh
+  3. Start refresh loop:      scripts/3-start-token-refresh.sh
+  The Step Functions execution must be running before UDP traffic flows.
+
+# ==========================================================================
+#  Parameters
+# ==========================================================================
+
+Parameters:
+
+  SupabaseEdgeFunctionUrl:
+    Type: String
+    Description: >
+      Full HTTPS URL of the deployed Supabase Edge Function, e.g.
+      https://xxxx.supabase.co/functions/v1/udp-receiver
+
+  JwtSecretParam:
+    Type: String
+    Default: /supabase-udp/jwt-secret
+    Description: >
+      SSM SecureString path containing the HS256 signing secret shared with
+      the Edge Function. Must match the JWT_SECRET set via supabase secrets set.
+
+  TokenTtlSeconds:
+    Type: Number
+    Default: 3600
+    Description: >
+      JWT lifetime in seconds. The Step Functions loop issues a new token at
+      most every (TokenTtlSeconds - TokenRefreshBufferSeconds) seconds.
+
+  TokenRefreshBufferSeconds:
+    Type: Number
+    Default: 300
+    Description: >
+      The loop refreshes this many seconds before expiry to allow for clock
+      skew and API Gateway stage propagation latency. Must be less than
+      TokenTtlSeconds.
+
+  BatchCount:
+    Type: Number
+    Default: 25
+    Description: >
+      Maximum UDP packets Proxylity groups into a single API Gateway invocation.
+      Higher values reduce API Gateway call overhead; lower values reduce
+      per-batch latency at lower send rates.
+
+  BatchTimeoutSeconds:
+    Type: Number
+    Default: 0.05
+    Description: >
+      Maximum seconds Proxylity waits to fill a batch before dispatching
+      regardless of count. Keep low to bound tail latency at low packet rates.
+
+  ClientCidrToAllow:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR range of UDP senders allowed to reach the listener.
+      Restrict to your device network CIDR in production.
+
+# ==========================================================================
+#  Proxylity customer config (injected per-account by Proxylity)
+# ==========================================================================
+
+Mappings:
+  ProxylityConfig:
+    Fn::Transform:
+      Name: AWS::Include
+      Parameters:
+        Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+
+# ==========================================================================
+#  Lambda defaults
+# ==========================================================================
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+
+# ==========================================================================
+#  Resources
+# ==========================================================================
+
+Resources:
+
+  # --------------------------------------------------------------------------
+  #  JwtSigner Lambda
+  #
+  #  Called ONLY by the Step Functions refresh loop — never on the hot UDP
+  #  data path. Signs an HS256 JWT using the shared secret from SSM and returns
+  #  { token, expiresIn, waitSeconds } to the state machine.
+  # --------------------------------------------------------------------------
+
+  JwtSignerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-jwt-signer"
+      CodeUri: src/JwtSigner/
+      Handler: index.handler
+      Environment:
+        Variables:
+          JWT_SECRET_PARAM:             !Ref JwtSecretParam
+          TOKEN_TTL_SECONDS:            !Ref TokenTtlSeconds
+          TOKEN_REFRESH_BUFFER_SECONDS: !Ref TokenRefreshBufferSeconds
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${JwtSecretParam}"
+
+  # --------------------------------------------------------------------------
+  #  Step Functions Standard Workflow — JWT Refresh Loop
+  #
+  #  STANDARD (not EXPRESS) because it is long-running: one execution persists
+  #  for the lifetime of the deployment, looping indefinitely.
+  #
+  #  States:
+  #    SignJwt            → invokes JwtSignerFunction
+  #    UpdateStageVariable → SDK integration: apigateway:updateStage
+  #                          writes the new JWT to the SUPABASE_JWT stage variable
+  #    WaitForExpiry      → waits waitSeconds (= TTL - buffer) before looping
+  #
+  #  Execution input (provided by scripts/3-start-token-refresh.sh):
+  #    { "restApiId": "<SupabaseApi logical ID resolved value>" }
+  # --------------------------------------------------------------------------
+
+  JwtRefreshStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      Role: !GetAtt JwtRefreshSfnRole.Arn
+      Definition:
+        Comment: >
+          Continuously refreshes the SUPABASE_JWT stage variable on the API Gateway
+          prod stage. Start once after deployment; runs until the execution is stopped
+          or the stack is deleted.
+        StartAt: SignJwt
+        States:
+          SignJwt:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: !GetAtt JwtSignerFunction.Arn
+              Payload: {}
+            ResultSelector:
+              "token.$":       "$.Payload.token"
+              "waitSeconds.$": "$.Payload.waitSeconds"
+            ResultPath: "$.jwt"
+            Next: UpdateStageVariable
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: RefreshFailed
+          UpdateStageVariable:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:apigateway:updateStage"
+            Parameters:
+              "RestApiId.$": "$.restApiId"
+              StageName: prod
+              PatchOperations:
+                - Op: replace
+                  Path: /variables/SUPABASE_JWT
+                  "Value.$": "$.jwt.token"
+            ResultPath: null
+            Next: WaitForExpiry
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: RefreshFailed
+          WaitForExpiry:
+            Type: Wait
+            "SecondsPath": "$.jwt.waitSeconds"
+            Next: SignJwt
+          RefreshFailed:
+            Type: Fail
+            Error: "RefreshFailed"
+            Cause: "JWT refresh loop encountered an unrecoverable error. Check CloudWatch Logs for the JwtSigner Lambda and the state machine execution history."
+
+  JwtRefreshSfnRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: JwtRefreshPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeJwtSigner
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt JwtSignerFunction.Arn
+              # apigateway:PATCH is the IAM permission for UpdateStage
+              - Sid: UpdateApiStage
+                Effect: Allow
+                Action: apigateway:PATCH
+                Resource: !Sub "arn:aws:apigateway:${AWS::Region}::/restapis/${SupabaseApi}/stages/prod"
+
+  # --------------------------------------------------------------------------
+  #  REST API Gateway — "inside-out" bridge
+  #
+  #  HTTP integration type: Proxylity calls the API as a client; the API
+  #  calls out to the Supabase Edge Function as a backend.
+  #
+  #  The VTL request template passes the Proxylity batch body unchanged and
+  #  injects "Authorization: Bearer <SUPABASE_JWT>" from the stage variable.
+  #  The response template passes the Edge Function's { "Replies": [...] }
+  #  back to Proxylity unchanged.
+  # --------------------------------------------------------------------------
+
+  SupabaseApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-supabase-bridge"
+      Description: >
+        Inside-out REST API: receives Proxylity UDP batches and forwards them
+        to the Supabase Edge Function with a rotating JWT authorization header.
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  SupabaseApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SupabaseApi
+      ParentId:  !GetAtt SupabaseApi.RootResourceId
+      PathPart:  udp-receiver
+
+  SupabaseApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:         !Ref SupabaseApi
+      ResourceId:        !Ref SupabaseApiResource
+      HttpMethod:        POST
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type:                  HTTP
+        IntegrationHttpMethod: POST
+        Uri:                   !Ref SupabaseEdgeFunctionUrl
+        PassthroughBehavior:   NEVER
+        RequestTemplates:
+          # Inject the Authorization header from the SUPABASE_JWT stage variable.
+          # The Proxylity batch body ({ "Messages": [...] }) passes through unchanged.
+          # Supabase's Edge Function gateway expects Bearer token authentication.
+          application/json: |
+            #set($context.requestOverride.header.Authorization = "Bearer $stageVariables.SUPABASE_JWT")
+            #set($context.requestOverride.header.Content-Type = "application/json")
+            $input.body
+        IntegrationResponses:
+          # 2xx from the Edge Function: pass the { "Replies": [...] } body through.
+          - StatusCode: "200"
+            SelectionPattern: "2\\d{2}"
+            ResponseTemplates:
+              application/json: "$input.body"
+          # Any non-2xx (e.g. 401 from failed JWT verification): return empty Replies.
+          # Proxylity will send no UDP response to senders in this batch.
+          - StatusCode: "500"
+            ResponseTemplates:
+              application/json: '{"Replies":[]}'
+      MethodResponses:
+        - StatusCode: "200"
+        - StatusCode: "500"
+
+  SupabaseApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId:   !Ref SupabaseApi
+      Description: Initial deployment
+    DependsOn: SupabaseApiMethod
+
+  SupabaseApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId:    !Ref SupabaseApi
+      StageName:    prod
+      DeploymentId: !Ref SupabaseApiDeployment
+      # SUPABASE_JWT starts empty. The Step Functions refresh loop populates it
+      # within seconds of its first execution. Do not send UDP traffic until
+      # scripts/3-start-token-refresh.sh has completed.
+      Variables:
+        SUPABASE_JWT: ""
+
+  # --------------------------------------------------------------------------
+  #  Proxylity Destination IAM Role
+  #
+  #  Proxylity assumes this role to call execute-api:Invoke on POST /udp-receiver.
+  #  Least-privilege: one HTTP method, one stage, one resource path.
+  # --------------------------------------------------------------------------
+
+  DestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                Fn::FindInMap:
+                  - ProxylityConfig
+                  - !Ref AWS::Region
+                  - ServiceRole
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSupabaseBridge
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SupabaseApi}/prod/POST/udp-receiver"
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+
+  # --------------------------------------------------------------------------
+  #  Proxylity UDP Listener
+  #
+  #  Created first with a placeholder DestinationArn ({}). The
+  #  ApiDestinationArn custom resource below updates it to the actual
+  #  execute-api ARN once the API Gateway stage has been deployed.
+  # --------------------------------------------------------------------------
+
+  UdpListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    Properties:
+      ServiceToken:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - !Ref AWS::Region
+          - ServiceToken
+      ApiKey:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Account
+          - ApiKey
+      Protocols: [udp]
+      ClientRestrictions:
+        Networks: [!Ref ClientCidrToAllow]
+      Destinations:
+        - Description: "Delivers Proxylity UDP batches to the Supabase Edge Function via API Gateway."
+          Role:
+            Arn: !GetAtt DestinationRole.Arn
+          DestinationArn: {}
+          Formatter: utf8
+          Batching:
+            Count:            !Ref BatchCount
+            TimeoutInSeconds: !Ref BatchTimeoutSeconds
+          MetricsEnabled: true
+
+  # Wire the Proxylity destination to the API Gateway execute-api ARN after
+  # the stage is deployed. The stage name is part of the ARN, so this must
+  # run after SupabaseApiStage exists.
+  ApiDestinationArn:
+    Type: Custom::ProxylityUdpGatewayDestinationArn
+    Properties:
+      ServiceToken:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - !Ref AWS::Region
+          - ServiceToken
+      ApiKey:
+        Fn::FindInMap:
+          - ProxylityConfig
+          - Account
+          - ApiKey
+      Destination: !Select [0, !GetAtt UdpListener.DestinationNames]
+      IngressRegionKey: !Ref AWS::Region
+      Arn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SupabaseApi}/prod/POST/udp-receiver"
+
+# ==========================================================================
+#  Outputs
+# ==========================================================================
+
+Outputs:
+  ListenerDomain:
+    Description: Proxylity UDP listener ingress domain
+    Value: !Sub "${UdpListener.Domain}.proxylity.com"
+
+  ListenerPort:
+    Description: Proxylity UDP listener ingress port
+    Value: !GetAtt UdpListener.Port
+
+  Endpoint:
+    Description: UDP endpoint to target from devices (domain:port)
+    Value: !Sub "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+
+  SupabaseApiId:
+    Description: API Gateway REST API ID — required as input to the Step Functions execution
+    Value: !Ref SupabaseApi
+
+  JwtRefreshStateMachineArn:
+    Description: ARN of the JWT refresh state machine — start one execution after deployment
+    Value: !Ref JwtRefreshStateMachine

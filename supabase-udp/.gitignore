@@ -1,0 +1,6 @@
+node_modules/
+.aws-sam/
+samconfig.toml
+outputs.json
+supabase/.temp/
+package-lock.json

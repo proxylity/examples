@@ -1,0 +1,6 @@
+{
+  "name": "jwt-signer",
+  "version": "1.0.0",
+  "description": "Signs short-lived HS256 JWTs for the API Gateway SUPABASE_JWT stage variable. Called by the Step Functions refresh loop — not on the hot UDP path.",
+  "main": "index.js"
+}

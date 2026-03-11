@@ -1,0 +1,8 @@
+{
+  "name": "supabase-udp",
+  "private": true,
+  "description": "Dev tooling for the supabase-udp Proxylity example. Run 'npm install' once before running the deployment scripts.",
+  "devDependencies": {
+    "supabase": "^2.78.1"
+  }
+}
