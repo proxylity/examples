@@ -7,7 +7,8 @@ public sealed class UdpCacheClient : CacheClientBase
 {
     private readonly UdpClient _socket;
 
-    public UdpCacheClient(string host, int port)
+    public UdpCacheClient(string host, int port, TimeSpan defaultTtl = default)
+        : base(defaultTtl)
     {
         _socket = new UdpClient();
         _socket.Connect(new IPEndPoint(Dns.GetHostAddresses(host).First(), port));

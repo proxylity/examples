@@ -53,7 +53,9 @@ public sealed class WgCacheClient : CacheClientBase
     /// <param name="peerEndpoint">WireGuard Listener endpoint. Use CacheEndpointWg stack output.</param>
     /// <param name="peerPublicKey">Listener's WireGuard public key, base64-encoded. Use WireGuardPublicKey stack output.</param>
     /// <param name="myPrivateKey">Your 32-byte WireGuard private key, base64-encoded.</param>
-    public WgCacheClient(IPEndPoint peerEndpoint, string peerPublicKey, string myPrivateKey)
+    public WgCacheClient(IPEndPoint peerEndpoint, string peerPublicKey, string myPrivateKey,
+        TimeSpan defaultTtl = default)
+        : base(defaultTtl)
     {
         _wg = new WireGuardClient(peerEndpoint,
                   Convert.FromBase64String(peerPublicKey),

@@ -40,23 +40,23 @@ await Cli.RunAsync(async (
     // -----------------------------------------------------------------------
 
     Console.WriteLine($"=== Warm-up: seeding {keyCount} keys (UDP) ===");
-    await using var udpClient = new UdpCacheClient(udpHost, udpPort);
+    await using var udpClient = new UdpCacheClient(udpHost, udpPort, TimeSpan.FromSeconds(ttl));
     var seedSw = Stopwatch.StartNew();
 
     var seedResults = await Task.WhenAll(
         Enumerable.Range(0, keyCount).Select(i =>
-            udpClient.SetAsync($"key:{i}", $"value:{i}", ttl)));
+            udpClient.SetAsync($"key:{i}", $"value:{i}")));
 
     seedSw.Stop();
     Console.WriteLine($"Seeded {keyCount} keys in {seedSw.ElapsedMilliseconds} ms  " +
-                      $"(errors: {seedResults.Count(r => !r.Success)})");
+                      $"(errors: {seedResults.Count(r => r is CacheSetResponse.Error)})");
     Console.WriteLine();
 
     // -----------------------------------------------------------------------
     //  Phase 2: benchmark -- run each client in turn and collect results
     // -----------------------------------------------------------------------
 
-    var udpResult = await RunBenchmarkAsync("UDP", udpClient, concurrency, duration, keyCount, ttl);
+    var udpResult = await RunBenchmarkAsync("UDP", udpClient, concurrency, duration, keyCount);
 
     BenchmarkResult? wgResult = null;
     if (runWg)
@@ -65,10 +65,11 @@ await Cli.RunAsync(async (
         var privKey   = File.ReadAllText(wgPrivateKeyFile).Trim();
         await using var wgClient = new WgCacheClient(
             new IPEndPoint(Dns.GetHostAddresses(wgHost).First(), wgPort),
-            peerPublicKey: serverKey,
-            myPrivateKey:  privKey);
+            peerPublicKey:  serverKey,
+            myPrivateKey:   privKey,
+            defaultTtl:     TimeSpan.FromSeconds(ttl));
 
-        wgResult = await RunBenchmarkAsync("WireGuard", wgClient, concurrency, duration, keyCount, ttl);
+        wgResult = await RunBenchmarkAsync("WireGuard", wgClient, concurrency, duration, keyCount);
     }
 
     // -----------------------------------------------------------------------
@@ -80,21 +81,25 @@ await Cli.RunAsync(async (
     const string checkKey = "tester:check";
     const string checkVal = "hello-momento";
 
-    var setR = await udpClient.SetAsync(checkKey, checkVal, ttl);
-    Console.WriteLine($"  SET  {checkKey} = \"{checkVal}\"  -> {(setR.Success ? "OK" : $"ERROR: {setR.Error}")}");
+    var setR = await udpClient.SetAsync(checkKey, checkVal);
+    Console.WriteLine($"  SET  {checkKey} = \"{checkVal}\"  -> " +
+        (setR is CacheSetResponse.Success ? "OK" : $"ERROR: {((CacheSetResponse.Error)setR).Message}"));
 
     var getR     = await udpClient.GetAsync(checkKey);
-    var received = getR.ValueAsString ?? "(null)";
+    var hit      = getR as CacheGetResponse.Hit;
+    var received = hit?.ValueString ?? "(null)";
     var match    = received == checkVal;
-    Console.WriteLine($"  GET  {checkKey}     -> {(getR.Hit ? $"HIT \"{received}\"" : $"MISS  error={getR.Error}")}  " +
-                      $"[{(match ? "PASS" : $"FAIL -- expected \"{checkVal}\"")}]");
+    Console.WriteLine($"  GET  {checkKey}     -> " +
+        (hit is not null ? $"HIT \"{received}\"" : $"MISS  error={(getR as CacheGetResponse.Error)?.Message}") +
+        $"  [{(match ? "PASS" : $"FAIL -- expected \"{checkVal}\"")}]");
 
     var delR = await udpClient.DeleteAsync(checkKey);
-    Console.WriteLine($"  DEL  {checkKey}     -> {(delR.Success ? "OK" : $"ERROR: {delR.Error}")}");
+    Console.WriteLine($"  DEL  {checkKey}     -> " +
+        (delR is CacheDeleteResponse.Success ? "OK" : $"ERROR: {((CacheDeleteResponse.Error)delR).Message}"));
 
     var afterDel = await udpClient.GetAsync(checkKey);
-    Console.WriteLine($"  GET  {checkKey} (after DEL) -> {(afterDel.Hit ? "HIT (unexpected!)" : "MISS")}  " +
-                      $"[{(!afterDel.Hit ? "PASS" : "FAIL")}]");
+    Console.WriteLine($"  GET  {checkKey} (after DEL) -> {(afterDel is CacheGetResponse.Hit ? "HIT (unexpected!)" : "MISS")}  " +
+                      $"[{(afterDel is CacheGetResponse.Miss ? "PASS" : "FAIL")}]");
 
     // -----------------------------------------------------------------------
     //  Summary comparison
@@ -111,7 +116,7 @@ await Cli.RunAsync(async (
     }
 
     Console.WriteLine();
-    bool allPassed = udpResult.Errors == 0 && match && !afterDel.Hit
+    bool allPassed = udpResult.Errors == 0 && match && afterDel is CacheGetResponse.Miss
                      && (wgResult is null || wgResult.Errors == 0);
     Console.WriteLine(allPassed ? "All checks passed." : "One or more checks FAILED.");
 });
@@ -122,7 +127,7 @@ await Cli.RunAsync(async (
 
 static async Task<BenchmarkResult> RunBenchmarkAsync(
     string label, CacheClientBase client,
-    int concurrency, int duration, int keyCount, uint ttl)
+    int concurrency, int duration, int keyCount)
 {
     Console.WriteLine($"=== Throughput run: {label} ({duration}s, {concurrency} workers) ===");
 
@@ -150,15 +155,15 @@ static async Task<BenchmarkResult> RunBenchmarkAsync(
                 {
                     var r = await client.GetAsync(key, cts.Token);
                     opSw.Stop();
-                    if (r.Error is not null) localErrors++;
-                    else if (r.Hit)          localHits++;
-                    else                     localMisses++;
+                    if      (r is CacheGetResponse.Hit)  localHits++;
+                    else if (r is CacheGetResponse.Miss) localMisses++;
+                    else                                  localErrors++;
                 }
                 else
                 {
-                    var r = await client.SetAsync(key, $"v:{workerId}:{localOps}", ttl, cts.Token);
+                    var r = await client.SetAsync(key, $"v:{workerId}:{localOps}", ct: cts.Token);
                     opSw.Stop();
-                    if (!r.Success) localErrors++;
+                    if (r is CacheSetResponse.Error) localErrors++;
                 }
             }
             catch (OperationCanceledException) { break; }

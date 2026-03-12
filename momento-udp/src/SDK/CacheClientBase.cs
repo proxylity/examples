@@ -4,15 +4,51 @@ using System.Text;
 namespace MomentoUdpCache.Sdk;
 
 // ---------------------------------------------------------------------------
-//  Result types
+//  Response types — discriminated unions matching the Momento SDK shape.
+//
+//  The UDP SDK deliberately omits the cacheName parameter that the gRPC SDK
+//  carries on each method. The target cache is a server-side policy decision
+//  fixed at deploy time via the MOMENTO_CACHE_NAME Lambda environment
+//  variable. Keeping it there prevents a client from targeting an arbitrary
+//  cache using the stack's Momento API key. Deploy separate stacks if
+//  multiple caches are required.
 // ---------------------------------------------------------------------------
 
-public sealed record SetResult(bool Success, string? Error = null);
-public sealed record GetResult(bool Hit, byte[]? Value = null, string? Error = null)
+public abstract class CacheGetResponse
 {
-    public string? ValueAsString => Value is not null ? Encoding.UTF8.GetString(Value) : null;
+    public sealed class Hit : CacheGetResponse
+    {
+        internal Hit(byte[] value) => ValueByteArray = value;
+        public byte[]  ValueByteArray { get; }
+        public string  ValueString    => Encoding.UTF8.GetString(ValueByteArray);
+    }
+    public sealed class Miss  : CacheGetResponse { }
+    public sealed class Error : CacheGetResponse
+    {
+        internal Error(string message) => Message = message;
+        public string Message { get; }
+    }
 }
-public sealed record DeleteResult(bool Success, string? Error = null);
+
+public abstract class CacheSetResponse
+{
+    public sealed class Success : CacheSetResponse { }
+    public sealed class Error   : CacheSetResponse
+    {
+        internal Error(string message) => Message = message;
+        public string Message { get; }
+    }
+}
+
+public abstract class CacheDeleteResponse
+{
+    public sealed class Success : CacheDeleteResponse { }
+    public sealed class Error   : CacheDeleteResponse
+    {
+        internal Error(string message) => Message = message;
+        public string Message { get; }
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Wire protocol (UTF-8, newline-delimited)
@@ -47,7 +83,13 @@ public abstract class CacheClientBase : IAsyncDisposable
     private Task _receiveLoop = Task.CompletedTask;
     private uint _nextReqId;
 
-    private readonly TimeSpan _timeout = TimeSpan.FromSeconds(5);
+    private readonly TimeSpan _timeout     = TimeSpan.FromSeconds(1);
+    private readonly TimeSpan _defaultTtl;
+
+    protected CacheClientBase(TimeSpan defaultTtl = default)
+    {
+        _defaultTtl = defaultTtl > TimeSpan.Zero ? defaultTtl : TimeSpan.FromSeconds(300);
+    }
 
     // Call at the end of the derived constructor, after the transport is ready.
     protected void StartReceiveLoop() => _receiveLoop = ReceiveLoopAsync(_cts.Token);
@@ -56,7 +98,7 @@ public abstract class CacheClientBase : IAsyncDisposable
     //  GET
     // -----------------------------------------------------------------------
 
-    public async Task<GetResult> GetAsync(string key, CancellationToken ct = default)
+    public async Task<CacheGetResponse> GetAsync(string key, CancellationToken ct = default)
     {
         var resp   = await SendAndAwaitAsync($"{{0}}\nGET\n{key}", ct);
         var nl     = resp.IndexOf('\n');
@@ -64,10 +106,10 @@ public abstract class CacheClientBase : IAsyncDisposable
         var body   = nl < 0 ? ""   : resp[(nl + 1)..];
         return status switch
         {
-            "HIT"  => new GetResult(true,  TryFromBase64(body)),
-            "MISS" => new GetResult(false),
-            "ERR"  => new GetResult(false, Error: body),
-            _      => new GetResult(false, Error: $"unexpected: {resp}")
+            "HIT"  => new CacheGetResponse.Hit(TryFromBase64(body) ?? Array.Empty<byte>()),
+            "MISS" => new CacheGetResponse.Miss(),
+            "ERR"  => new CacheGetResponse.Error(body),
+            _      => new CacheGetResponse.Error($"unexpected: {resp}")
         };
     }
 
@@ -75,27 +117,30 @@ public abstract class CacheClientBase : IAsyncDisposable
     //  SET
     // -----------------------------------------------------------------------
 
-    public Task<SetResult> SetAsync(string key, string value, uint ttlSeconds = 300, CancellationToken ct = default)
-        => SetAsync(key, Encoding.UTF8.GetBytes(value), ttlSeconds, ct);
+    public Task<CacheSetResponse> SetAsync(string key, string value,
+        TimeSpan? ttl = null, CancellationToken ct = default)
+        => SetAsync(key, Encoding.UTF8.GetBytes(value), ttl, ct);
 
-    public async Task<SetResult> SetAsync(string key, byte[] value, uint ttlSeconds = 300, CancellationToken ct = default)
+    public async Task<CacheSetResponse> SetAsync(string key, byte[] value,
+        TimeSpan? ttl = null, CancellationToken ct = default)
     {
+        var ttlSeconds = (uint)Math.Ceiling((ttl ?? _defaultTtl).TotalSeconds);
         var resp = await SendAndAwaitAsync($"{{0}}\nSET\n{key}\n{ttlSeconds}\n{Convert.ToBase64String(value)}", ct);
         return resp == "OK"
-            ? new SetResult(true)
-            : new SetResult(false, resp.StartsWith("ERR\n") ? resp[4..] : resp);
+            ? new CacheSetResponse.Success()
+            : new CacheSetResponse.Error(resp.StartsWith("ERR\n") ? resp[4..] : resp);
     }
 
     // -----------------------------------------------------------------------
     //  DELETE
     // -----------------------------------------------------------------------
 
-    public async Task<DeleteResult> DeleteAsync(string key, CancellationToken ct = default)
+    public async Task<CacheDeleteResponse> DeleteAsync(string key, CancellationToken ct = default)
     {
         var resp = await SendAndAwaitAsync($"{{0}}\nDEL\n{key}", ct);
         return resp == "OK"
-            ? new DeleteResult(true)
-            : new DeleteResult(false, resp.StartsWith("ERR\n") ? resp[4..] : resp);
+            ? new CacheDeleteResponse.Success()
+            : new CacheDeleteResponse.Error(resp.StartsWith("ERR\n") ? resp[4..] : resp);
     }
 
     // -----------------------------------------------------------------------
