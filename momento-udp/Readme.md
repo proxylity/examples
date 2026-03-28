@@ -41,7 +41,9 @@ if (response is CacheGetResponse.Hit hit)
     Console.WriteLine(hit.ValueString);
 ```
 
-The client sends a single UDP datagram. There is no connection to establish, no state to maintain, and no session lifetime to manage beyond the socket. The transport is replaced entirely; the `async`/`await` surface is preserved. The complexity that was in the client — channel management, stream multiplexing, reconnection — moves to the Lambda, where it belongs on the server side of the edge.
+The transport is replaced entirely while the `async`/`await` surface is preserved. For each request the client sends a single UDP datagram.
+
+The complexity that was in the client — channel management, stream multiplexing, reconnection — moves to the Lambda, where it belongs on the server side (not the edge).
 
 > **Why is there no `cacheName` parameter?** In the gRPC SDK the cache name is passed on every call, which means a client can target any cache the API key is permitted to reach. The UDP SDK omits it deliberately. The target cache is a __server-side__ policy decision set at deploy time via the `MOMENTO_CACHE_NAME` Lambda environment variable. This prevents a compromised client from directing operations to an unintended cache using the stack's API key. If your use case needs multiple caches, simply deploy one stack per cache. Each will have its own endpoint and its own `MOMENTO_CACHE_NAME` binding.
 
