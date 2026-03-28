@@ -28,13 +28,13 @@ The equivalent using this SDK:
 
 ```csharp
 // Momento UDP/WireGuard SDK — no connection, no lifetime to manage
-        var serverKey = File.ReadAllText(wgServerKeyFile).Trim();
-        var privKey   = File.ReadAllText(wgPrivateKeyFile).Trim();
-        await using var wgClient = new WgCacheClient(
-            new IPEndPoint(Dns.GetHostAddresses(wgHost).First(), wgPort),
-            peerPublicKey:  serverKey,
-            myPrivateKey:   privKey,
-            defaultTtl:     TimeSpan.FromSeconds(300));
+var serverKey = File.ReadAllText(wgServerKeyFile).Trim();
+var privKey   = File.ReadAllText(wgPrivateKeyFile).Trim();
+await using var wgClient = new WgCacheClient(
+    new IPEndPoint(Dns.GetHostAddresses(wgHost).First(), wgPort),
+    peerPublicKey:  serverKey,
+    myPrivateKey:   privKey,
+    defaultTtl:     TimeSpan.FromSeconds(300));
 
 CacheGetResponse response = await client.GetAsync("my-key");
 if (response is CacheGetResponse.Hit hit)
