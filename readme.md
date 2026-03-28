@@ -38,7 +38,7 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 * **[IoT Temperature Display/Sensor](./wireguard-iot-device/README.md)** - IoT device based on a "Cheap Yellow Display"<sup>[1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)</sup> with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) protected telemetry and time synchronization (NTP)
 * **[UDP to REST API](./udp-to-http/readme.md)** - Demonstrates using an "inside out" API Gateway to proxy UDP sensor data to [Adafruit IO](https://io.adafruit.io)'s REST API.
 * **[Momento Cache over UDP](./momento-udp/Readme.md)** - Superior performance for GET/SET operations for Momento Cache when network connections degrade.
-* **[Supabase over UDP](./supabase-udp/README.md) - Calling Supabase via UDP from the edge to integrate IoT devices with your web app.
+* **[Supabase over UDP](./supabase-udp/README.md)** - Calling Supabase via UDP from the edge to integrate IoT devices with your web app.
 
 And more!
 
