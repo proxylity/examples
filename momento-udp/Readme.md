@@ -1,10 +1,14 @@
 # Momento UDP Cache Proxy
 
-A service that exposes [Momento](https://www.gomomento.com/) cache operations over UDP and/or WireGuard via the [Proxylity](https://proxylity.com/) UDP Gateway. Clients send fire-and-forget packets; Proxylity batches them into Lambda invocations; the Lambda fans them out as concurrent Momento gRPC calls and replies with the results.
+A service that exposes [Momento](https://www.gomomento.com/) cache operations over UDP and/or WireGuard via the [Proxylity](https://proxylity.com/) UDP Gateway. Clients send fire-and-forget GET/SET cache requests; Proxylity batches them into Lambda invocations; the Lambda fans them out as concurrent Momento gRPC calls and replies with the results. The result is equally low latency requests and responses, but with better "goodput" when network conditions degrade and a simpler and more efficient network stack.
 
-## From gRPC to UDP
+To cut to the chase see [Deployment](#deployment), below.
 
-The Momento SDK exposes a gRPC-backed async API, which is a good fit for many applications. But it does come with some sharp edges when used on unreliable networks (LTE, WiFi, Industrial). Using the existing API a client call looks like this:
+## gRPC as the Starting Point
+
+The Momento SDK and backend expose a gRPC-backed async API, which is a good fit for many applications. It does come with some sharp edges, however, when used on unreliable networks (LTE, WiFi, Industrial, long-haul). 
+
+Using the standard Momento SDK a client call looks like this:
 
 ```csharp
 // gRPC SDK — caller owns the channel lifecycle
@@ -20,14 +24,17 @@ if (response is CacheGetResponse.Hit hit)
 
 The SDK manages the gRPC channel's TCP connection, TLS negotiation, HTTP/2 SETTINGS frame, and keep-alive pings. The application owns the top-level `CacheClient` lifetime (disposing it tears down the connection). Reconnection, backpressure, and request correlation all provided through the HTTP/2 stream layer.
 
-The problems we're solving in this example are around dropped packets flummoxing TCP. For many cache use cases, perfection isn't required and we'd rather treat lost packets as misses quickly rather than get the right answer slowly. With TCP underlying gRPC we can't really solve that -- so let's try a UDP based alternative!
-
-The UDP equivalent:
+The equivalent using this SDK:
 
 ```csharp
-// UDP SDK — no connection, no lifetime to manage
-await using var client = new UdpCacheClient("your-host", your_port,
-    defaultTtl: TimeSpan.FromSeconds(300));
+// Momento UDP/WireGuard SDK — no connection, no lifetime to manage
+        var serverKey = File.ReadAllText(wgServerKeyFile).Trim();
+        var privKey   = File.ReadAllText(wgPrivateKeyFile).Trim();
+        await using var wgClient = new WgCacheClient(
+            new IPEndPoint(Dns.GetHostAddresses(wgHost).First(), wgPort),
+            peerPublicKey:  serverKey,
+            myPrivateKey:   privKey,
+            defaultTtl:     TimeSpan.FromSeconds(300));
 
 CacheGetResponse response = await client.GetAsync("my-key");
 if (response is CacheGetResponse.Hit hit)
@@ -38,35 +45,39 @@ The client sends a single UDP datagram. There is no connection to establish, no 
 
 > **Why is there no `cacheName` parameter?** In the gRPC SDK the cache name is passed on every call, which means a client can target any cache the API key is permitted to reach. The UDP SDK omits it deliberately. The target cache is a __server-side__ policy decision set at deploy time via the `MOMENTO_CACHE_NAME` Lambda environment variable. This prevents a compromised client from directing operations to an unintended cache using the stack's API key. If your use case needs multiple caches, simply deploy one stack per cache. Each will have its own endpoint and its own `MOMENTO_CACHE_NAME` binding.
 
-
 ## Why UDP on the client side?
 
-Cache operations are generally loss tolerant. A dropped packet can be seen as a cache miss, which the caller handles by falling back to the authoritative source. This property makes UDP a good fit.
+The problems we're solving are caused when dropped packets flummox the TCP reliability "features", starting with retransmitions. For many cache use cases perfection isn't required and we'd rather treat lost packets as misses quickly than get the right answer slowly. With TCP underlying gRPC we can't really solve that -- hence this UDP based alternative.
 
-Beyond loss tolerance, the edge-to-cloud path (Wi-Fi, mobile, public internet) turns TCP's reliability to a liability:
+Code generally treats cache operations as loss tolerant implicitly -- it's expected that cache items need to be populated, and previously added items may be rotated out based on TTL or other mechanisms. A dropped packet can be seen as a cache miss, which the caller handles by falling back to the authoritative source (i.e. a code path very likely to aready exist). This property makes UDP a good fit and closely aligns the network transport semantics with the application layer.
+
+Beyond loss tolerance, a degraded edge-to-cloud path (Wi-Fi, mobile, public internet) turns TCP's reliability to a liability:
 
 - **Head-of-line blocking.** When TCP loses a packet its retransmission timer stalls *every* request on that connection for as much as a second. Meanwhile, each UDP packet is independent so one drop affects only that single operation and all others proceed without delay. This keeps P99 latency bounded by the application timeout, not the OS retransmission schedule. Because gRPC is uses a single TCP connection it suffers this malady.
 - **Connection overhead.** A gRPC client must complete a TCP + TLS handshakes and HTTP/2 configuration before the first cache request can be made. UDP clients fire immediately with no state to establish or maintain. For lightweight devices (IoT) the extended "air time" burns precious power.
 - **Connection state to manage.** Reconnection logic, backpressure, encryption state, and keep-alives are the caller's problem with long-lived connections. UDP clients are effectively stateless.
 
-### Why gRPC on the backend?
+### But there is still gRPC in this backend?
 
-The Lambda to Momento flow is server-to-server, in-region, low jitter, and highly reliable. Under those conditions gRPC's connection overhead amortises well and its congestion control is a virtue. In this implementation, it's important that the `CacheClient` survives across warm Lambda invocations so the handshake cost is paid once and reused often.
+The Lambda in this project communicates with Momento in a server-to-server, in-region, low jitter, and highly reliable envrionment. Under those conditions gRPC's connection overhead amortises well and its congestion control is a virtue. Given that, it's important to note that the `CacheClient` (gRPC connection) survives across warm Lambda invocations so the handshake cost is paid once and reused often.
 
-### The Proxylity batching layer
+### The batching layer
 
-Proxylity groups up to `BatchCount` UDP datagrams from clients into a single Lambda invocation. The Lambda then sends all of them out over one gRPC channel via `Task.WhenAll` allowing the gRPC SDK to handle responses and complete when they arrive. Clients of UDP SDK therefore benefit from connection multiplexing without needing to know it exists — the complexity lives entirely inside the Lambda.
+UDP Gateway groups up to `BatchCount` UDP datagrams from clients into a single Lambda invocation. The Lambda then sends all of them out over one gRPC channel via `Task.WhenAll` allowing the gRPC SDK to handle responses and complete when they arrive. Clients of UDP SDK therefore benefit from connection multiplexing without needing to know it exists — the complexity lives entirely inside the Lambda.
 
-### WireGuard, modern encryption for UDP
+Tuning the batch size for low latency (smaller batches, down to 1 packet) or low cost (larger batches, fewer lambda calls) is a simple, no-downtime configuration change.
+
+### WireGuard: Modern encryption for UDP
 
 Plain UDP is unprotected and unauthenticated (IP allow lists notwithstanding). A common answer for securing UDP traffic is DTLS, but DTLS inherits much of TLS's handshake overhead and is complex to implement correctly. Another alternative is to run plain UDP inside a WireGuard tunnel.
 
 WireGuard is both a modern encryption transport built on UDP as well as a VPN. The transport provides mutual authentication and encryption with a minimal handshake (one round trip for a fresh session, then stateless from the client's perspective). Importantly, it doesn't involve a TCP or TLS layer (inside or outside). The transport is UDP, and all the latency properties described above are preserved.
 
-`WgCacheClient` is a drop-in replacement for `UdpCacheClient`. Both derive from `CacheClientBase` and share the same wire protocol. The only difference is the transport. On the backend, the Lambda receives identical UTF-8 payloads either way because Proxylity's WireGuard Listener is configured with `DecapsulatedDelivery: true` and strips the WireGuard envelope before invoking the Lambda. This conveniently makes the function code transport agnostic.
+`WgCacheClient` is a drop-in replacement for `UdpCacheClient`. Both derive from `CacheClientBase` and share the same wire protocol. The only difference is the transport. On the backend, the Lambda receives identical UTF-8 payloads either way because Proxylity's WireGuard Listener is configured with `DecapsulatedDelivery: true` and strips the WireGuard envelope before invoking the Lambda. This conveniently makes the function code agnostic to the transport choice.
 
-WireGuard vs. plain UDP is a deployment decision. Deploy both listeners (the default) and run the Tester with `--wg-*` flags to benchmark the overhead of encryption on your path. Or, deploy just one or the other as you prefer.
+WireGuard vs. plain UDP is a deployment decision controlled by the `ListenerType` stack parameter (also provide the public key of the peer/client in the `WireGuardClientPublicKey` parameter).
 
+ and run the Tester with `--wg-*` flags to benchmark the overhead of encryption on your path. Or, deploy just one or the other as you prefer.
 
 ## Architecture
 
@@ -148,9 +159,9 @@ The Proxylity Destination is configured with `Formatter: utf8`. This means:
 
 > **Note:** This Lambda would be compiled with NativeAOT and deployed to the `provided.al2023` runtime to minimise cold-start latency. Unfortunately, that isn't currently possible. The `Momento.Sdk` library's `Momento.Protos` dependency pulls in `Grpc` , which wraps a native C shared library via P/Invoke (fundamentally incompatible with NativeAOT). Additionally, `Google.Protobuf` and `JWT`  both use reflection-based serialisation without AOT source generator support. If Momento publishes an AOT-compatible SDK in future, switching to `provided.al2023` and adding `<PublishAot>true</PublishAot>` to the project would be the path to faster cold starts (down to ~100ms).  Another alternative would be to use the Momento HTTP API, but that brings other issues to bear.
 
-### SDK — UDP Client Library
+### SDK — WireGuard and UDP Client Library
 
-`UdpCacheClient` provides a simple async API for .NET applications:
+The `WgCacheClient` and `UdpCacheClient` provide a simple, `async` API and are compatible with AoT (Ahead of Time compilation):
 
 ```csharp
 await using var client = new UdpCacheClient("your-proxylity-host", port,
@@ -161,7 +172,7 @@ CacheGetResponse    get = await client.GetAsync("my-key");
 CacheDeleteResponse del = await client.DeleteAsync("my-key");
 ```
 
-A single UDP socket handles all concurrent operations. This requires solving the same request/response correlation problem that gRPC handles transparently via HTTP/2 stream IDs. Responses can arrive in any order over a shared socket and must be routed back to the correct caller.
+In each client a single UDP socket handles all concurrent operations (making requests, handling responses). This requires solving the same request/response correlation problem that gRPC handles transparently via HTTP/2 stream IDs: Responses can arrive in any order over a shared socket and must be routed back to the correct caller.
 
 The solution is the `reqId` field. Each request gets a unique ID from `Interlocked.Increment`, embedded as the first newline-delimited field. The receive loop parses the leading `reqId` of every incoming datagram and routes it to the correct `TaskCompletionSource` via `ConcurrentDictionary` lookup. The result is the same async/await surface as the gRPC SDK, implemented in ~20 lines rather than an HTTP/2 stack. No semaphore or socket pool is required.
 
@@ -178,7 +189,7 @@ Each cache operation must fit in a single UDP datagram. In practice the effectiv
 
 > **Note:** The Base64 encoding of the value in SET and HIT packets adds ~33% size overhead. Making the actual maximum raw binary value about 900 bytes (~1,200 bytes on the wire, which is near the safe limit). This is easy to improve using a binary encoding, but the MTU limit remains.
 
-### Timeout is the miss
+### Timeout is a miss
 
 `CacheClientBase` imposes a 1-second timeout on every pending request. The correct interpretation of each result type is:
 
@@ -188,8 +199,9 @@ Each cache operation must fit in a single UDP datagram. In practice the effectiv
 | `CacheGetResponse.Miss` | Genuine miss | Fall back to authoritative source |
 | `TimeoutException` or `CacheGetResponse.Error` | Packet lost or operation failed | Treat as miss; fall back to authoritative source |
 
-The logic behind the "cache operations are loss-tolerant" claim is that the failure mode is handled at the application level, rather than by retransmission (quick is better than correct). The caller's fallback path is likely already required for genuine misses and can absorbs dropped packets with no additional complexity.
+The logic behind "cache operations are loss-tolerant" is that the failure mode is handled at the application level, rather than by retransmission (quick is better than correct). The caller's fallback path is likely already required for genuine misses and can absorbs dropped packets with no additional complexity.
 
+In keeping with .Net conventions a timeout generates an exception which must be handled approapriately by the application. 
 
 ## Deployment
 
@@ -246,23 +258,24 @@ udp_host=${udp_endpoint%:*}; udp_port=${udp_endpoint##*:}
 wg_host=${wg_endpoint%:*};   wg_port=${wg_endpoint##*:}
 
 cd src/Tester
+# Run default benchmark
 dotnet run -- \
   --udp-host $udp_host --udp-port $udp_port \
   --wg-host  $wg_host  --wg-port  $wg_port  \
   --wg-server-key-file  server_public.key \
   --wg-private-key-file client_private.key
 
-# Tune concurrency, duration, TTL, and key-space size
+# Run modified benchmark
 dotnet run -- \
   --udp-host $udp_host --udp-port $udp_port \
   --wg-host  $wg_host  --wg-port  $wg_port  \
   --wg-server-key-file  server_public.key \
   --wg-private-key-file client_private.key \
+  # Tune concurrency, duration, TTL, and key-space size
   --concurrency 50 --duration 30 --ttl 60 --key-count 5000
 
 dotnet run -- --help
 ```
-
 
 ## Observability
 
