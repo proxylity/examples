@@ -1,4 +1,4 @@
-# Momento UDP Cache Proxy
+# Momento Cache UDP-based SDK and API Bridge
 
 A service that exposes [Momento](https://www.gomomento.com/) cache operations over UDP and/or WireGuard via the [Proxylity](https://proxylity.com/) UDP Gateway. Clients send fire-and-forget GET/SET cache requests; Proxylity batches them into Lambda invocations; the Lambda fans them out as concurrent Momento gRPC calls and replies with the results. The result is equally low latency requests and responses, but with better "goodput" when network conditions degrade and a simpler and more efficient network stack.
 
