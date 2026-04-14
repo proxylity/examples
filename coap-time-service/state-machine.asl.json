@@ -1,0 +1,71 @@
+{
+    "Comment": "CoAP Time Service — processes each message individually via a Map state. A Choice routes on Path, a second Choice routes on CON vs NON for unrecognised paths.",
+    "QueryLanguage": "JSONata",
+    "TimeoutSeconds": 2,
+    "StartAt": "Process Messages",
+    "States": {
+        "Process Messages": {
+            "Type": "Map",
+            "Items": "{% $states.input.Messages %}",
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "INLINE"
+                },
+                "StartAt": "Parse CoAP Data",
+                "States": {
+                    "Parse CoAP Data": {
+                        "Type": "Pass",
+                        "Comment": "Deserialise the stringified CoAP JSON into a structured field so downstream states can reference properties directly.",
+                        "Output": "{% $merge([$states.input, {\"Coap\": $parse($states.input.Data)}]) %}",
+                        "Next": "Route by Path"
+                    },
+                    "Route by Path": {
+                        "Type": "Choice",
+                        "Comment": "Dispatch on the CoAP URI path.",
+                        "Choices": [
+                            {
+                                "Condition": "{% $states.input.Coap.Path = \"/time\" %}",
+                                "Next": "Respond With Time",
+                                "Comment": "/time"
+                            }
+                        ],
+                        "Default": "Check Message Type"
+                    },
+                    "Check Message Type": {
+                        "Type": "Choice",
+                        "Comment": "CON messages must be acknowledged (RFC 7252 §4.2); NON messages are fire-and-forget.",
+                        "Choices": [
+                            {
+                                "Condition": "{% $states.input.Coap.Type = \"CON\" %}",
+                                "Next": "Respond With Not Found"
+                            }
+                        ],
+                        "Default": "No Reply"
+                    },
+                    "Respond With Time": {
+                        "Type": "Pass",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": \"ACK\",\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"ContentFormat\": \"text/plain\",\n        \"MaxAge\": 0,\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
+                        "End": true
+                    },
+                    "Respond With Not Found": {
+                        "Type": "Pass",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": \"ACK\",\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    })\n} %}",
+                        "End": true
+                    },
+                    "No Reply": {
+                        "Type": "Pass",
+                        "Output": "{% null %}",
+                        "End": true
+                    }
+                }
+            },
+            "Next": "Collect Replies"
+        },
+        "Collect Replies": {
+            "Type": "Pass",
+            "Comment": "Filter out null entries produced by the No Reply branch, then wrap the remainder in the Replies envelope.",
+            "Output": "{% {\"Replies\": $states.input[$ != null]} %}",
+            "End": true
+        }
+    }
+}

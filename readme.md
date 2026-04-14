@@ -32,6 +32,7 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 * **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
 * **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
 * **[Multi-Modal Workflows](multi-modal)** - Sophisticated example combining HTTP browser interactions with UDP processing and long-running tasks
+* **[CoAP Time Service](coap-time-service)** - UDP Gateway speaks [CoAP](https://en.wikipedia.org/wiki/Constrained_Application_Protocol) — the REST-like protocol purpose-built for constrained IoT devices. Binary packets are decoded to JSON by the `coap` formatter before delivery, and re-encoded on the way back. A serverless Step Functions state machine routes requests by URI path and handles Confirmable/Non-confirmable semantics correctly, with zero infrastructure to manage.
 * **[DNS Filtering Service](dns-filter)** - Production-ready DNS resolver with domain blocking and redirection capabilities for custom DNS infrastructure
 * **[RADIUS Authorization and Accounting](radius)** - Cloud-based RADIUS authentication and accounting system with session state tracking, packet archiving, and multi-region deployment support. Like FreeRADIUS and NPS if they were modern, scalable and had super powers.
 * **[WireGuard VPN Backend](./wireguard-echo/readme.md)** - Serverless VPN solution supporting UDP echo and ICMP ping through encrypted tunnels
