@@ -26,7 +26,7 @@ Description: >
   ===============
   BatchCount controls how many UDP packets Proxylity groups per Lambda
   invocation. Task.WhenAll fans all N packets out as concurrent Momento
-  gRPC calls over the SDK's persistent channel.
+  calls over the SDK's persistent gRPC channel.
 
 Parameters:
   MomentoCacheName:
