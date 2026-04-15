@@ -25,7 +25,7 @@ Proxylity's `coap` formatter decodes each inbound binary UDP/CoAP packet into a 
     {
       "Tag": "abc123",
       "Remote": { "IpAddress": "203.0.113.5", "Port": 12345 },
-      "Data": "{\"Type\":\"CON\",\"Method\":\"GET\",\"MessageId\":4711,\"Token\":\"AQID\",\"Path\":\"/time\",\"Payload\":\"\"}"
+      "Data": "{\"Version\":1,\"Type\":0,\"Code\":1,\"MessageId\":4711,\"Token\":\"AQID\",\"Method\":\"GET\",\"Path\":\"/time\",\"Options\":[{\"Number\":11,\"Value\":\"dGltZQ==\"}]}"
     }
   ]
 }
@@ -34,20 +34,22 @@ Proxylity's `coap` formatter decodes each inbound binary UDP/CoAP packet into a 
 The state machine inspects the `Path` property of each decoded request:
 
 - Path is `/time` → reply with `2.05 Content` ACK, payload is the execution start time as plain text.
-- Any other path, `Type` is `CON` → reply with `4.04 Not Found` ACK. This is required by RFC 7252: a Confirmable message **must** be acknowledged or the sender will keep retransmitting.
-- Any other path, `Type` is `NON` → no reply. Non-confirmable messages are fire-and-forget; silently ignoring is correct per spec.
+- Any other path, `Type` is `0` (CON) → reply with `4.04 Not Found` ACK. This is required by RFC 7252: a Confirmable message **must** be acknowledged or the sender will keep retransmitting.
+- Any other path, `Type` is `1` (NON) → no reply. Non-confirmable messages are fire-and-forget; silently ignoring is correct per spec.
 
 The reply `Data` is a stringified JSON object that Proxylity's `coap` formatter re-encodes into a valid binary CoAP response before sending it back to the client:
 
 ```jsonc
 // CoAP response produced for GET /time
 {
-  "Type": "ACK",
+  "Type": 2,
   "Code": "2.05",
   "MessageId": 4711,
   "Token": "AQID",
-  "ContentFormat": "text/plain",
-  "MaxAge": 0,
+  "Options": [
+    {"Number": 12, "Value": ""},
+    {"Number": 14, "Value": ""}
+  ],
   "Payload": "<base64-encoded UTC timestamp>"
 }
 ```
@@ -75,10 +77,10 @@ COAP_DOMAIN=$(jq -r '.[]|select(.OutputKey=="Domain")|.OutputValue' outputs.json
 COAP_PORT=$(jq  -r '.[]|select(.OutputKey=="Port") |.OutputValue' outputs.json)
 ```
 
-For a very basic test we can send a GET request with `echo`, `nc` and `xxd`:
+For a very basic test we can send a GET request with `echo`, `nc` and `strings`:
 
 ```bash
-echo -ne "\x50\x01\x12\x34\xB4\x74\x69\x6D\x65" | nc -u ${COAP_DOMAIN} ${COAP_PORT} -w 1 | xxd
+echo -ne "\x50\x01\x12\x34\xB4\x74\x69\x6D\x65" | nc -u ${COAP_DOMAIN} ${COAP_PORT} -w 1 | strings
 ```
 
 ### Testing with `coap-client`
@@ -126,7 +128,7 @@ Collect Replies (Pass)         → filter out nulls,
 
 ### Parse CoAP Data
 
-The `Data` field arrives as a stringified JSON string. This state uses JSONata's `$eval()` to deserialise it into a structured `.Coap` property so all downstream states can reference fields like `.Coap.Path` and `.Coap.Type` directly.
+The `Data` field arrives as a stringified JSON string. This state uses JSONata's `$parse()` to deserialise it into a structured `.Coap` property so all downstream states can reference fields like `.Coap.Path` and `.Coap.Type` directly.
 
 ### Route by Path
 
@@ -143,7 +145,7 @@ A second `Choice` state that enforces CoAP's Confirmable/Non-confirmable contrac
 
 | Condition | Next state | Rationale |
 |---|---|---|
-| `Coap.Type = "CON"` | Respond With Not Found | CON requires an ACK or the client retransmits |
+| `Coap.Type = 0` | Respond With Not Found | CON (Type=0) requires an ACK or the client retransmits |
 | _(NON or other)_ | No Reply | Fire-and-forget; silence is correct |
 
 ### Collect Replies

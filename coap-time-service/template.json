@@ -168,7 +168,7 @@
         ]
       }
     },
-    "UdpListener": {
+    "CoAPListener": {
       "Type": "Custom::ProxylityUdpGatewayListener",
       "Properties": {
         "ServiceToken": {
@@ -227,20 +227,20 @@
   "Outputs": {
     "Domain": {
       "Value": {
-        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+        "Fn::Sub": "${CoAPListener.Domain}.proxylity.com"
       }
     },
     "Port": {
       "Value": {
         "Fn::GetAtt": [
-          "UdpListener",
+          "CoAPListener",
           "Port"
         ]
       }
     },
     "Endpoint": {
       "Value": {
-        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+        "Fn::Sub": "${CoAPListener.Domain}.proxylity.com:${CoAPListener.Port}"
       }
     }
   }

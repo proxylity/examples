@@ -33,10 +33,10 @@
                     },
                     "Check Message Type": {
                         "Type": "Choice",
-                        "Comment": "CON messages must be acknowledged (RFC 7252 §4.2); NON messages are fire-and-forget.",
+                        "Comment": "CON messages (Type=0) must be acknowledged (RFC 7252 §4.2); NON messages are fire-and-forget.",
                         "Choices": [
                             {
-                                "Condition": "{% $states.input.Coap.Type = \"CON\" %}",
+                                "Condition": "{% $states.input.Coap.Type = 0 %}",
                                 "Next": "Respond With Not Found"
                             }
                         ],
@@ -44,12 +44,12 @@
                     },
                     "Respond With Time": {
                         "Type": "Pass",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": \"ACK\",\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"ContentFormat\": \"text/plain\",\n        \"MaxAge\": 0,\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"\"},\n            {\"Number\": 14, \"Value\": \"\"}\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
                         "End": true
                     },
                     "Respond With Not Found": {
                         "Type": "Pass",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": \"ACK\",\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    })\n} %}",
                         "End": true
                     },
                     "No Reply": {
@@ -64,7 +64,7 @@
         "Collect Replies": {
             "Type": "Pass",
             "Comment": "Filter out null entries produced by the No Reply branch, then wrap the remainder in the Replies envelope.",
-            "Output": "{% {\"Replies\": $states.input[$ != null]} %}",
+            "Output": "{% {\"Replies\": [$states.input[$ != null]]} %}",
             "End": true
         }
     }
