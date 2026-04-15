@@ -24,6 +24,11 @@
                         "Comment": "Dispatch on the CoAP URI path.",
                         "Choices": [
                             {
+                                "Condition": "{% $states.input.Coap.Path = \"/.well-known/core\" %}",
+                                "Next": "Respond With Discovery",
+                                "Comment": "RFC 6690 resource discovery"
+                            },
+                            {
                                 "Condition": "{% $states.input.Coap.Path = \"/time\" %}",
                                 "Next": "Respond With Time",
                                 "Comment": "/time"
@@ -41,6 +46,12 @@
                             }
                         ],
                         "Default": "No Reply"
+                    },
+                    "Respond With Discovery": {
+                        "Type": "Pass",
+                        "Comment": "RFC 6690 CoRE Link Format — advertises the /time resource.",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"40\"}\n        ],\n        \"Payload\": $base64encode(\"</time>;rt=\\\"time\\\";if=\\\"clock\\\";ct=0\")\n    })\n} %}",
+                        "End": true
                     },
                     "Respond With Time": {
                         "Type": "Pass",
