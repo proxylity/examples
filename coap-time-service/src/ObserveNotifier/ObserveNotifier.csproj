@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <AssemblyName>ObserveNotifier</AssemblyName>
+    <RootNamespace>ObserveNotifier</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Amazon.Lambda.Core"                        Version="2.8.1" />
+    <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.5" />
+    <PackageReference Include="Amazon.Lambda.RuntimeSupport"               Version="1.14.2" />
+    <PackageReference Include="AWSSDK.Core"                                Version="4.0.3.26" />
+    <PackageReference Include="AWSSDK.DynamoDBv2"                          Version="4.0.17.5" />
+    <PackageReference Include="AWSSDK.SimpleNotificationService"           Version="4.0.2.24" />
+  </ItemGroup>
+
+</Project>

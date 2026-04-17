@@ -1,12 +1,17 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Transform": "AWS::Serverless-2016-10-31",
-  "Description": "Example template for a CoAP time service using AWS Step Functions connected to a Proxylity UDP Listener. Responds to CoAP GET /time requests with the current UTC time. You must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Description": "Example template for a CoAP/wg time service using AWS Step Functions connected to a Proxylity UDP Listener. Responds to CoAP GET /time requests with the current UTC time. You must have an active Proxylity UDP Gateway Pro or Enterprise subscription to successfully deploy this template (Packet Sources are not available on the Free plan).",
   "Parameters": {
     "ClientCidrToAllow": {
       "Description": "The CIDR describing which IP addresses should be allowed to use the listener. Default is open/everyone.",
       "Type": "String",
       "Default": "0.0.0.0/0"
+    },
+    "WireGuardClientPublicKey": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Base64-encoded 32-byte WireGuard public key of the client peer."
     }
   },
   "Mappings": {
@@ -22,6 +27,32 @@
     }
   },
   "Resources": {
+    "ObserveTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          { "AttributeName": "ClientEndpoint", "AttributeType": "S" },
+          { "AttributeName": "Token",          "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "ClientEndpoint", "KeyType": "HASH"  },
+          { "AttributeName": "Token",          "KeyType": "RANGE" }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "Expires",
+          "Enabled": true
+        }
+      }
+    },
+    "ObserveNotifyTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": {
+          "Fn::Sub": "${AWS::StackName} CoAP Observe Outbound"
+        }
+      }
+    },
     "ExecutionLogs": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -36,6 +67,9 @@
       "Properties": {
         "Type": "EXPRESS",
         "DefinitionUri": "state-machine.asl.json",
+        "DefinitionSubstitutions": {
+          "ObserveTableName": { "Ref": "ObserveTable" }
+        },
         "Role": {
           "Fn::GetAtt": [
             "StateMachineRole",
@@ -85,6 +119,130 @@
         }
       }
     },
+    "ProxylitySubscribeToTopicPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "ProxylitySubscribeToTopicPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "SubscriptionManagement",
+              "Effect": "Allow",
+              "Action": [
+                "sns:Subscribe",
+                "sns:Unsubscribe",
+                "sns:ListSubscriptionsByTopic"
+              ],
+              "Resource": [
+                { "Fn::GetAtt": [ "ObserveNotifyTopic", "TopicArn" ] }
+              ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "DestinationRole" } ]
+      }
+    },
+    "ObservePacketSource": {
+      "DependsOn": [ "ProxylitySubscribeToTopicPolicy" ],
+      "Type": "Custom::ProxylityUdpGatewayPacketSource",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceToken" ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [ "ProxylityConfig", "Account", "ApiKey" ]
+        },
+        "Enabled": true,
+        "ListenerName": { "Ref": "CoAPListener" },
+        "SnsTopicSource": {
+          "Role": {
+            "Fn::GetAtt": [ "DestinationRole", "Arn" ]
+          },
+          "TopicArn": {
+            "Fn::GetAtt": [ "ObserveNotifyTopic", "TopicArn" ]
+          }
+        }
+      }
+    },
+    "ObserveNotifierRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "ObserveNotifierPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "DdbScanUpdate",
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:Scan",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": [
+                    { "Fn::GetAtt": [ "ObserveTable", "Arn" ] }
+                  ]
+                },
+                {
+                  "Sid": "SnsPublish",
+                  "Effect": "Allow",
+                  "Action": [ "sns:Publish" ],
+                  "Resource": [
+                    { "Fn::GetAtt": [ "ObserveNotifyTopic", "TopicArn" ] }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ObserveNotifierFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "Handler": "bootstrap",
+        "Runtime": "provided.al2023",
+        "CodeUri": "./src/ObserveNotifier/",
+        "Architectures": [ "x86_64" ],
+        "MemorySize": 256,
+        "Timeout": 60,
+        "Role": { "Fn::GetAtt": [ "ObserveNotifierRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME":      { "Ref": "ObserveTable" },
+            "REPLY_TOPIC_ARN": { "Fn::GetAtt": [ "ObserveNotifyTopic", "TopicArn" ] },
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1"
+          }
+        },
+        "Events": {
+          "MinuteSchedule": {
+            "Type": "ScheduleV2",
+            "Properties": {
+              "ScheduleExpression": "rate(1 minute)",
+              "Description": "Fires the observe notifier every minute to push RFC 7641 NON notifications to all active subscribers."
+            }
+          }
+        }
+      }
+    },
     "StateMachineRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -100,6 +258,29 @@
             }
           ]
         }
+      }
+    },
+    "StateMachineDdbPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "StateMachineDdbPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ObserveTableReadWrite",
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem"
+              ],
+              "Resource": [
+                { "Fn::GetAtt": [ "ObserveTable", "Arn" ] }
+              ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "StateMachineRole" } ]
       }
     },
     "StateMachineLoggingPolicy": {
@@ -188,7 +369,13 @@
           ]
         },
         "Protocols": [
-          "udp"
+          "wg"
+        ],
+        "Peers": [
+          {
+            "PublicKey": { "Ref": "WireGuardClientPublicKey" },
+            "AllowedIPs": [ "0.0.0.0/0", "::/0" ]
+          }
         ],
         "ClientRestrictions": {
           "Networks": [
@@ -197,6 +384,7 @@
             }
           ]
         },
+        "DecapsulatedDelivery": true,
         "Destinations": [
           {
             "Description": "Decodes each inbound CoAP packet and delivers the parsed request to the time service state machine, which returns an ACK response for GET /time requests.",
@@ -241,6 +429,12 @@
     "Endpoint": {
       "Value": {
         "Fn::Sub": "${CoAPListener.Domain}.proxylity.com:${CoAPListener.Port}"
+      }
+    },
+    "WireGuardPublicKey": {
+      "Description": "Listener WireGuard public key -- configure in your WireGuard client",
+      "Value": {
+        "Fn::GetAtt": [ "CoAPListener", "WireGuardPublicKey" ]
       }
     }
   }

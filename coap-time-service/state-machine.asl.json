@@ -1,5 +1,5 @@
 {
-    "Comment": "CoAP Time Service — processes each message individually via a Map state. A Choice routes on Path, a second Choice routes on CON vs NON for unrecognised paths.",
+    "Comment": "CoAP Time Service — processes each message individually via a Map state. Route by Type handles RST/ACK first, then Route by Path dispatches on URI. RFC 7641 Observe registrations write to DynamoDB; the ObserveNotifier Lambda fans out minute-cadence NON notifications.",
     "QueryLanguage": "JSONata",
     "TimeoutSeconds": 2,
     "StartAt": "Process Messages",
@@ -15,9 +15,68 @@
                 "States": {
                     "Parse CoAP Data": {
                         "Type": "Pass",
-                        "Comment": "Deserialise the stringified CoAP JSON into a structured field so downstream states can reference properties directly.",
-                        "Output": "{% $merge([$states.input, {\"Coap\": $parse($states.input.Data)}]) %}",
-                        "Next": "Route by Path"
+                        "Comment": "Deserialise the stringified CoAP JSON into a structured field so downstream states can reference properties directly. Also pre-computes ClientEndpoint (IP:Port string) once so DynamoDB states don't repeat the expression.",
+                        "Output": "{% $merge([$states.input, {\"Coap\": $parse($states.input.Data), \"ClientEndpoint\": $states.input.Remote.IpAddress & \":\" & $string($states.input.Remote.Port)}]) %}",
+                        "Next": "Route by Type"
+                    },
+                    "Route by Type": {
+                        "Type": "Choice",
+                        "Comment": "Dispatch ACK and RST before path routing. NON-based Observe notifications do not require ACK tracking, so Type=2 is silently discarded. RST indicates the client is cancelling an Observe or rejecting a CON (RFC 7252 §4.5).",
+                        "Choices": [
+                            {
+                                "Condition": "{% $states.input.Coap.Type = 3 %}",
+                                "Next": "Check RST Token",
+                                "Comment": "RST — remove Observe subscription if Token is present"
+                            },
+                            {
+                                "Condition": "{% $states.input.Coap.Type = 2 %}",
+                                "Next": "No Reply (Client ACK)",
+                                "Comment": "ACK — no action needed for NON-based Observe"
+                            }
+                        ],
+                        "Default": "Route by Path"
+                    },
+                    "No Reply (Client ACK)": {
+                        "Type": "Pass",
+                        "Output": "{% null %}",
+                        "End": true
+                    },
+                    "Check RST Token": {
+                        "Type": "Choice",
+                        "Comment": "RFC 7252 §4.5 — RST SHOULD echo the triggering Token; if absent we cannot identify the subscription so we silently drop.",
+                        "Choices": [
+                            {
+                                "Condition": "{% $exists($states.input.Coap.Token) and $states.input.Coap.Token != \"\" %}",
+                                "Next": "Handle RST"
+                            }
+                        ],
+                        "Default": "No Reply (RST)"
+                    },
+                    "Handle RST": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::dynamodb:deleteItem",
+                        "Comment": "Remove the Observe subscription identified by ClientEndpoint (IP:Port) and Token. On failure the catch falls through to No Reply, which is correct regardless — RST is a one-way signal and requires no response.",
+                        "Arguments": {
+                            "TableName": "${ObserveTableName}",
+                            "Key": {
+                                "ClientEndpoint": {
+                                    "S": "{% $states.input.ClientEndpoint %}"
+                                },
+                                "Token": {
+                                    "S": "{% $states.input.Coap.Token %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Catch": [
+                            {
+                                "ErrorEquals": [
+                                    "States.ALL"
+                                ],
+                                "Next": "No Reply (RST)"
+                            }
+                        ],
+                        "Next": "No Reply (RST)"
                     },
                     "Route by Path": {
                         "Type": "Choice",
@@ -30,32 +89,115 @@
                             },
                             {
                                 "Condition": "{% $states.input.Coap.Path = \"/time\" %}",
-                                "Next": "Respond With Time",
-                                "Comment": "/time"
-                            }
-                        ],
-                        "Default": "Check Message Type"
-                    },
-                    "Check Message Type": {
-                        "Type": "Choice",
-                        "Comment": "CON messages (Type=0) must be acknowledged (RFC 7252 §4.2); NON messages are fire-and-forget.",
-                        "Choices": [
+                                "Next": "Route by Observe",
+                                "Comment": "/time — dispatch on Observe option"
+                            },
                             {
                                 "Condition": "{% $states.input.Coap.Type = 0 %}",
-                                "Next": "Respond With Not Found"
+                                "Next": "Respond With Not Found",
+                                "Comment": "CON to unknown path — must acknowledge with 4.04 (RFC 7252 §4.2)"
                             }
                         ],
-                        "Default": "No Reply"
+                        "Default": "No Reply (Unknown Path)"
+                    },
+                    "No Reply (Unknown Path)": {
+                        "Type": "Pass",
+                        "Output": "{% null %}",
+                        "End": true
+                    },
+                    "Route by Observe": {
+                        "Type": "Choice",
+                        "Comment": "Dispatch /time requests on Option 6 (Observe). Value \"\" is Observe=0 (register, RFC 7641 §3.1); \"AQ==\" is Observe=1 (deregister, RFC 7641 §3.6). Option values are base64-encoded per the Proxylity CoAP formatter.",
+                        "Default": "Respond With Time",
+                        "Choices": [
+                            {
+                                "Condition": "{% $exists($states.input.Coap.Options[Number=6 and Value=\"\"]) %}",
+                                "Next": "Register Observe",
+                                "Comment": "Observe=0, register"
+                            },
+                            {
+                                "Condition": "{% $exists($states.input.Coap.Options[Number=6 and Value=\"AQ==\"]) %}",
+                                "Next": "Deregister Observe",
+                                "Comment": "Observe=1, deregister"
+                            }
+                        ]
+                    },
+                    "Register Observe": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Comment": "Create or refresh the Observe subscription. TTL is 180 s — clients must re-register within that window as signalled by Max-Age=60 on every notification (3 missed minutes before expiry). PK=ClientEndpoint (IP:Port), SK=Token. Remote is stored using outbound field names (Address/Port/PeerKey) so the notifier Lambda can use it directly in the SNS envelope. Inner is stored as a JSON string so the notifier Lambda can swap source/destination for the reply envelope. On failure the catch falls back to Respond With Time (no Option 6) — this is the RFC 7641 §3.1 way to decline a registration: the client still receives the time it requested and understands the subscription was not accepted.",
+                        "Arguments": {
+                            "TableName": "${ObserveTableName}",
+                            "Item": {
+                                "ClientEndpoint": {
+                                    "S": "{% $states.input.ClientEndpoint %}"
+                                },
+                                "Token": {
+                                    "S": "{% $states.input.Coap.Token %}"
+                                },
+                                "Remote": {
+                                    "S": "{% $string({\"Address\": $states.input.Remote.IpAddress, \"Port\": $states.input.Remote.Port, \"PeerKey\": ($exists($states.input.Remote.PeerKey) ? $states.input.Remote.PeerKey : \"\")}) %}"
+                                },
+                                "Inner": {
+                                    "S": "{% $exists($states.input.Inner) ? $string($states.input.Inner) : '' %}"
+                                },
+                                "Expires": {
+                                    "N": "{% $string($floor($toMillis($now()) / 1000) + 180) %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Catch": [
+                            {
+                                "ErrorEquals": [
+                                    "States.ALL"
+                                ],
+                                "Next": "Respond With Time"
+                            }
+                        ],
+                        "Next": "Respond With Time Observed"
+                    },
+                    "Deregister Observe": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::dynamodb:deleteItem",
+                        "Comment": "Remove the Observe subscription. On failure the catch falls back to Respond With Time — the subscription may linger in DynamoDB but the 180 s TTL will evict it within 3 missed notification cycles, so a 5.00 error response would only prompt unnecessary client retries for a condition that self-heals.",
+                        "Arguments": {
+                            "TableName": "${ObserveTableName}",
+                            "Key": {
+                                "ClientEndpoint": {
+                                    "S": "{% $states.input.ClientEndpoint %}"
+                                },
+                                "Token": {
+                                    "S": "{% $states.input.Coap.Token %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Catch": [
+                            {
+                                "ErrorEquals": [
+                                    "States.ALL"
+                                ],
+                                "Next": "Respond With Time"
+                            }
+                        ],
+                        "Next": "Respond With Time"
                     },
                     "Respond With Discovery": {
                         "Type": "Pass",
                         "Comment": "RFC 6690 CoRE Link Format — advertises the /time resource.",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"40\"}\n        ],\n        \"Payload\": $base64encode(\"</time>;rt=\\\"time\\\";if=\\\"clock\\\";ct=0\")\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"KA==\"}\n        ],\n        \"Payload\": $base64encode(\"</time>;rt=\\\"time\\\";if=\\\"clock\\\";ct=0;obs\")\n    })\n} %}",
+                        "End": true
+                    },
+                    "Respond With Time Observed": {
+                        "Type": "Pass",
+                        "Comment": "Registration confirmation (RFC 7641 §3.1) — identical to a plain time response but carries Option 6 (Observe=0) to confirm the subscription and Option 14 (Max-Age=60) to tell the client when to re-register.",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 6 },\n            {\"Number\": 12 },\n            {\"Number\": 14, \"Value\": \"PA==\"}\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
                         "End": true
                     },
                     "Respond With Time": {
                         "Type": "Pass",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"\"},\n            {\"Number\": 14, \"Value\": \"\"}\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12 },\n            {\"Number\": 14 }\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
                         "End": true
                     },
                     "Respond With Not Found": {
@@ -63,7 +205,7 @@
                         "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    })\n} %}",
                         "End": true
                     },
-                    "No Reply": {
+                    "No Reply (RST)": {
                         "Type": "Pass",
                         "Output": "{% null %}",
                         "End": true
