@@ -101,23 +101,25 @@ Create a WireGuard tunnel configuration:
 sudo tee /etc/wireguard/coap.conf <<EOF
 [Interface]
 PrivateKey = $(cat client.key)
-Address = 10.10.10.10/32
+Address = 10.10.10.20/32
 
 [Peer]
 PublicKey = ${WG_PEER_KEY}
 Endpoint = ${COAP_DOMAIN}:${COAP_PORT}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 10.10.10.21/32
 PersistentKeepalive = 25
 EOF
 sudo wg-quick up coap
 ```
+
+> **Note**: Using `AllowedIPs = 10.10.10.21/32` routes only packets *destined for* `10.10.10.21` through the WireGuard tunnel, leaving all other traffic on the normal network path. This avoids conflicts if other WireGuard tunnels (e.g. the `packet-capture` example) are active on the same machine at the same time.
 
 ### Testing with `coap-client`
 
 If you have [libcoap](https://libcoap.net/) with the [`coap-client`](https://libcoap.net/doc/reference/4.2.0/man_coap-client.html) tool installed, send a request through the WireGuard tunnel:
 
 ```bash
-coap-client -m get "coap://${COAP_DOMAIN}:${COAP_PORT}/time"
+coap-client -m get "coap://10.10.10.21:${COAP_PORT}/time"
 ```
 
 The response payload is a plain-text ISO 8601 UTC timestamp, for example:
