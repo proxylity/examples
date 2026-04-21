@@ -4,6 +4,8 @@ This example captures UDP packets arriving over **plain UDP** and optionally **W
 
 Use this project for quick, ad-hoc packet capture when local capture isn't convenient or even possible. A similar pattern can be applied to any Proxylity Listener using the SQS queue as a secondary destination to give live and real-time obvservability of messages as they arrive without disturbing the flow to the primary destination(s).
 
+A deployment walkthrough is available on YouTube: https://youtu.be/BUfWxlaHTWo
+
 ## System Diagram
 
 ![Packet Capture Architecture](./packet-capture.svg)
