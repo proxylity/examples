@@ -2,7 +2,7 @@
 
 This example captures UDP packets arriving over **plain UDP** and optionally **WireGuard** and displays them live in a browser. There is no persistent packet storage — packets flow from the Proxylity listener through an SQS queue and a Lambda worker straight into an [AppSync Events](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-welcome.html) channel, which pushes them in real time to any connected browser.
 
-Use this project for quick, ad-hoc packet capture when local capture isn't isn't convenient or even possible. A similar pattern can be applied to any Proxylity Listener using the SQS queue as a secondary destination to give live and real-time obvservability of messages as they arrive without disturbing the flow to the primary destination(s).
+Use this project for quick, ad-hoc packet capture when local capture isn't convenient or even possible. A similar pattern can be applied to any Proxylity Listener using the SQS queue as a secondary destination to give live and real-time obvservability of messages as they arrive without disturbing the flow to the primary destination(s).
 
 ## System Diagram
 
@@ -106,11 +106,13 @@ Address = 10.10.10.10/32
 [Peer]
 PublicKey = ${WG_SERVER_KEY}
 Endpoint = ${WG_ENDPOINT}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 10.10.10.11/32
 PersistentKeepalive = 25
 EOF
 sudo wg-quick up capture
 ```
+
+> **Note**: Using `AllowedIPs = 10.10.10.11/32` routes only packets *destined for* `10.10.10.11` through the WireGuard tunnel, leaving all other traffic — including the plain-UDP endpoint's public IP — on the normal network path. Both endpoints can be used simultaneously.
 
 ### 5 — Open the live UI
 
@@ -120,7 +122,7 @@ echo "Open this URL in your browser: ${UI_URL}"
 
 ### 6 — Send test packets
 
-Plain UDP (tunnel must be down):
+Plain UDP:
 
 ```bash
 for i in $(seq 1 10); do
@@ -128,11 +130,11 @@ for i in $(seq 1 10); do
 done
 ```
 
-Over WireGuard (tunnel must be up):
+Over WireGuard (tunnel must be **up**, send to any port on `10.10.10.11`):
 
 ```bash
 for i in $(seq 1 10); do
-  echo "hello wg packet $i" | ncat -u ${WG_ENDPOINT%:*} ${WG_ENDPOINT#*:}
+  echo "hello wg packet $i" | ncat -u 10.10.10.11 4321
 done
 ```
 

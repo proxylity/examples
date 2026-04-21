@@ -40,6 +40,7 @@ public class Function
                 byte[] payload  = Convert.FromBase64String(msg.Data ?? string.Empty);
                 string protocol = msg.Local?.Protocol ?? "udp";
 
+                var (layers, note) = PacketDissector.Dissect(protocol, msg.Remote, payload);
                 var packetEvent = new PacketEvent
                 {
                     CapturedAt  = DateTimeOffset.UtcNow.ToString("O"),
@@ -47,7 +48,8 @@ public class Function
                     SourceIp    = msg.Remote?.IpAddress ?? "unknown",
                     SourcePort  = msg.Remote?.Port ?? 0,
                     LengthBytes = payload.Length,
-                    Layers      = PacketDissector.Dissect(protocol, msg.Remote, payload)
+                    Note        = note,
+                    Layers      = layers
                 };
 
                 await PublishEventsAsync([packetEvent], context);
@@ -135,6 +137,9 @@ public class PacketEvent
     [JsonPropertyName("lengthBytes")]
     public int LengthBytes { get; set; }
 
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+
     [JsonPropertyName("layers")]
     public Layer[] Layers { get; set; } = [];
 }
@@ -189,30 +194,32 @@ public class Field
 
 internal static class PacketDissector
 {
-    internal static Layer[] Dissect(string? protocol, RemoteEndpoint? remote, byte[] payload)
+    internal static (Layer[] Layers, string? Note) Dissect(string? protocol, RemoteEndpoint? remote, byte[] payload)
     {
-        var layers = new List<Layer>();
+        var    layers = new List<Layer>();
+        string? note  = null;
 
         if (string.Equals(protocol, "wg", StringComparison.OrdinalIgnoreCase))
         {
-            // Outer WireGuard transport metadata
             layers.Add(new Layer
             {
                 Name    = "WireGuard",
                 Summary = $"WireGuard Transport, Peer: {remote?.IpAddress ?? "?"}:{remote?.Port ?? 0}",
                 Fields  =
                 [
-                    new Field { Label = "Peer Address",  Value = remote?.IpAddress ?? "unknown" },
-                    new Field { Label = "Peer Port",     Value = (remote?.Port ?? 0).ToString() },
-                    new Field { Label = "Inner Payload", Value = $"{payload.Length} bytes" }
+                    new Field { Label = "Peer Address", Value = remote?.IpAddress ?? "unknown" },
+                    new Field { Label = "Peer Port",    Value = (remote?.Port ?? 0).ToString() },
+                    new Field { Label = "Payload Size", Value = $"{payload.Length} bytes" }
                 ]
             });
 
-            // Parse decapsulated inner IP packet with PacketDotNet
+            // Parse the decapsulated inner IP packet
             try
             {
                 var packet = Packet.ParsePacket(LinkLayers.Raw, payload);
-                layers.AddRange(BuildPacketLayers(packet, payload));
+                var (innerLayers, appProtocol) = BuildPacketLayers(packet, payload);
+                layers.AddRange(innerLayers);
+                note = appProtocol;
             }
             catch
             {
@@ -221,7 +228,8 @@ internal static class PacketDissector
         }
         else
         {
-            // Plain UDP — synthesise layers from Proxylity metadata; Data is the application payload
+            // Plain UDP — Proxylity provides source IP/port; payload is the application data.
+            // No destination port is available (the listener port is not the application port).
             layers.Add(new Layer
             {
                 Name    = "IPv4",
@@ -242,16 +250,27 @@ internal static class PacketDissector
                     new Field { Label = "Length",      Value = $"{payload.Length} bytes" }
                 ]
             });
+
+            // Try to identify the application protocol; dstPort is unknown so pass 0
+            var app = ApplicationLayer.TryDissect(0, payload);
+            if (app is not null)
+            {
+                note = app.Value.ProtocolName;
+                layers.Add(app.Value.Layer);
+            }
             layers.Add(BuildDataLayer(payload));
         }
 
-        return [.. layers];
+        return ([.. layers], note);
     }
 
-    private static IEnumerable<Layer> BuildPacketLayers(Packet? start, byte[] rawPayload)
+    private static (List<Layer> Layers, string? AppProtocol) BuildPacketLayers(Packet? start, byte[] rawPayload)
     {
-        var current     = start;
+        var     layers       = new List<Layer>();
+        var     current      = start;
         byte[]? finalPayload = rawPayload;
+        int     dstPort      = 0;
+        string? appProtocol  = null;
 
         while (current is not null)
         {
@@ -267,7 +286,8 @@ internal static class PacketDissector
 
             if (layer is not null)
             {
-                yield return layer;
+                layers.Add(layer);
+                if (current is UdpPacket udpPkt) dstPort = udpPkt.DestinationPort;
                 finalPayload = current.PayloadData;
             }
 
@@ -275,7 +295,17 @@ internal static class PacketDissector
         }
 
         if (finalPayload is { Length: > 0 })
-            yield return BuildDataLayer(finalPayload);
+        {
+            var app = ApplicationLayer.TryDissect(dstPort, finalPayload);
+            if (app is not null)
+            {
+                appProtocol = app.Value.ProtocolName;
+                layers.Add(app.Value.Layer);
+            }
+            layers.Add(BuildDataLayer(finalPayload));
+        }
+
+        return (layers, appProtocol);
     }
 
     private static Layer BuildIPv4Layer(IPv4Packet ip) => new()
@@ -380,11 +410,30 @@ internal static class PacketDissector
         if (data.Length > 256)
             sb.Append($"... ({data.Length - 256} more bytes)");
 
+        var textSb = new StringBuilder();
+        for (int i = 0; i < limit; i += LineWidth)
+        {
+            int end = Math.Min(i + LineWidth, limit);
+            textSb.Append($"{i:x4}  ");
+            for (int j = i; j < end; j++)
+            {
+                byte b = data[j];
+                textSb.Append(b >= 0x20 && b < 0x7f ? (char)b : '.');
+            }
+            textSb.AppendLine();
+        }
+        if (data.Length > 256)
+            textSb.Append($"... ({data.Length - 256} more bytes)");
+
         return new Layer
         {
             Name    = "Data",
             Summary = $"Data ({data.Length} bytes)",
-            Fields  = [new Field { Label = "Hex Dump", Value = sb.ToString().TrimEnd() }]
+            Fields  =
+            [
+                new Field { Label = "Hex Dump",  Value = sb.ToString().TrimEnd() },
+                new Field { Label = "Text View", Value = textSb.ToString().TrimEnd() }
+            ]
         };
     }
 }

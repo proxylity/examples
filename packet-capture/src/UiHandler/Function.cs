@@ -199,8 +199,8 @@ public class Function
             }
             .arriving td { animation: row-arrive 1s ease-out; }
 
-            /* Hex dump block */
-            .hexdump {
+            /* Hex dump / text view blocks */
+            .hexdump, .textdump {
               font-family: 'Cascadia Code', 'Courier New', monospace;
               font-size: 11px;
               white-space: pre;
@@ -213,6 +213,8 @@ public class Function
               overflow-y: auto;
               color: #24292f;
             }
+
+            .note { font-size: 0.65rem; color: #8b949e; font-weight: 400; margin-left: 4px; }
           </style>
         </head>
         <body>
@@ -322,13 +324,14 @@ public class Function
                 ? pkt.capturedAt.replace('T', ' ').substring(0, 23) + ' Z' : '—';
               const src   = (pkt.sourceIp ?? '—') + ':' + (pkt.sourcePort ?? 0);
               const proto = (pkt.protocol ?? 'udp').toLowerCase();
+              const note  = pkt.note ? ' <span class="note">' + esc(pkt.note) + '</span>' : '';
 
               const tr = document.createElement('tr');
               tr.dataset.idx = idx;
               tr.innerHTML =
                 '<td>' + counter + '</td>' +
                 '<td>' + esc(ts) + '</td>' +
-                '<td><span class="proto proto-' + esc(proto) + '">' + esc(proto.toUpperCase()) + '</span></td>' +
+                '<td><span class="proto proto-' + esc(proto) + '">' + esc(proto.toUpperCase()) + '</span>' + note + '</td>' +
                 '<td>' + esc(src) + '</td>' +
                 '<td>' + (pkt.lengthBytes ?? '—') + '</td>';
 
@@ -403,6 +406,14 @@ public class Function
               if (field.label === 'Hex Dump') {
                 const pre = document.createElement('pre');
                 pre.className = 'hexdump';
+                pre.textContent = field.value;
+                container.appendChild(pre);
+                return;
+              }
+
+              if (field.label === 'Text View') {
+                const pre = document.createElement('pre');
+                pre.className = 'textdump';
                 pre.textContent = field.value;
                 container.appendChild(pre);
                 return;

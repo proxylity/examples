@@ -140,7 +140,7 @@ Resources:
             Arn: !GetAtt DestinationRole.Arn
           Batching:
             Count: 10
-            TimeoutInSeconds: 1
+            TimeoutInSeconds: 0.1
           MetricsEnabled: true
           LogGroupName: !Ref PacketQueueLogs
           DestinationArn: !GetAtt PacketQueue.Arn
@@ -169,7 +169,7 @@ Resources:
             Arn: !GetAtt DestinationRole.Arn
           Batching:
             Count: 10
-            TimeoutInSeconds: 1
+            TimeoutInSeconds: 0.1
           MetricsEnabled: true
           LogGroupName: !Ref PacketQueueLogs
           DestinationArn: !GetAtt PacketQueue.Arn
