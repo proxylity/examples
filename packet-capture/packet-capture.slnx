@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PacketProcessor/PacketProcessor.csproj" />
+    <Project Path="src/UiHandler/UiHandler.csproj" />
+  </Folder>
+</Solution>

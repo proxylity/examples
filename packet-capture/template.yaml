@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Packet capture over plain UDP and WireGuard with live browser UI. Proxylity UDP Listeners
+  forward every received packet to an SQS queue. A Lambda worker reads the queue and publishes
+  parsed packet metadata to an AppSync Events channel. A second Lambda serves a static HTML
+  page (via Lambda URL) that subscribes to the channel and renders incoming packets in real time,
+  newest on top. You must have an active Proxylity UDP Gateway subscription to deploy this template.
+
+Parameters:
+  ClientCidrToAllow:
+    Description: CIDR that is allowed to send packets to the listeners. Default is open/everyone.
+    Type: String
+    Default: "0.0.0.0/0"
+
+  WireGuardClientPublicKey:
+    Type: String
+    Default: ""
+    Description: >
+      Base64-encoded 32-byte WireGuard public key of the client peer. When non-empty, a WireGuard
+      listener is created in addition to the plain-UDP listener so encrypted packets are also captured.
+
+Conditions:
+  EnableWireGuard: !Not [!Equals [!Ref WireGuardClientPublicKey, ""]]
+
+Mappings:
+  ProxylityConfig:
+    Fn::Transform:
+      Name: AWS::Include
+      Parameters:
+        Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+
+Globals:
+  Function:
+    Runtime: dotnet10
+    MemorySize: 1024
+    Timeout: 10
+
+Resources:
+
+  # ── AppSync Events API ────────────────────────────────────────────────────────
+
+  PacketCaptureApi:
+    Type: AWS::AppSync::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-packet-capture"
+      EventConfig:
+        AuthProviders:
+          - AuthType: API_KEY
+        ConnectionAuthModes:
+          - AuthType: API_KEY
+        DefaultPublishAuthModes:
+          - AuthType: API_KEY
+        DefaultSubscribeAuthModes:
+          - AuthType: API_KEY
+
+  PacketCaptureApiKey:
+    Type: AWS::AppSync::ApiKey
+    Properties:
+      ApiId: !GetAtt PacketCaptureApi.ApiId
+
+  PacketsNamespace:
+    Type: AWS::AppSync::ChannelNamespace
+    Properties:
+      ApiId: !GetAtt PacketCaptureApi.ApiId
+      Name: packets
+
+  # ── SQS queue (Proxylity writes here) ────────────────────────────────────────
+
+  PacketQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 300
+
+  PacketQueueLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/proxylity/udp-listeners/${AWS::StackName}"
+      RetentionInDays: 7
+
+  # ── IAM role that allows Proxylity to enqueue packets ─────────────────────────
+
+  DestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceRole]
+            Action: sts:AssumeRole
+
+  DestinationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-destination-policy"
+      Roles:
+        - !Ref DestinationRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Sqs
+            Effect: Allow
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:SendMessage
+            Resource: !GetAtt PacketQueue.Arn
+          - Sid: CloudWatchMetrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: "*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "${PacketQueueLogs.Arn}:*"
+
+  # ── Plain UDP listener ────────────────────────────────────────────────────────
+
+  UdpListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    Properties:
+      ServiceToken: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceToken]
+      ApiKey: !FindInMap [ProxylityConfig, Account, ApiKey]
+      Protocols:
+        - udp
+      ClientRestrictions:
+        Networks:
+          - !Ref ClientCidrToAllow
+      Destinations:
+        - Description: Deliver raw UDP packets to the capture SQS queue.
+          Role:
+            Arn: !GetAtt DestinationRole.Arn
+          Batching:
+            Count: 10
+            TimeoutInSeconds: 1
+          MetricsEnabled: true
+          LogGroupName: !Ref PacketQueueLogs
+          DestinationArn: !GetAtt PacketQueue.Arn
+
+  # ── WireGuard listener (optional) ─────────────────────────────────────────────
+
+  WireGuardListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    Condition: EnableWireGuard
+    Properties:
+      ServiceToken: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceToken]
+      ApiKey: !FindInMap [ProxylityConfig, Account, ApiKey]
+      Protocols:
+        - wg
+      Peers:
+        - PublicKey: !Ref WireGuardClientPublicKey
+          AllowedIPs:
+            - "0.0.0.0/0"
+            - "::/0"
+      ClientRestrictions:
+        Networks:
+          - !Ref ClientCidrToAllow
+      Destinations:
+        - Description: Deliver decrypted WireGuard inner packets to the capture SQS queue.
+          Role:
+            Arn: !GetAtt DestinationRole.Arn
+          Batching:
+            Count: 10
+            TimeoutInSeconds: 1
+          MetricsEnabled: true
+          LogGroupName: !Ref PacketQueueLogs
+          DestinationArn: !GetAtt PacketQueue.Arn
+
+  # ── PacketProcessor Lambda ────────────────────────────────────────────────────
+  # Triggered by SQS; parses each packet and publishes metadata to AppSync Events.
+
+  PacketProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+
+  PacketProcessorPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-packet-processor-policy"
+      Roles:
+        - !Ref PacketProcessorRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AppSyncPublish
+            Effect: Allow
+            Action: appsync:EventPublish
+            Resource: !Sub "arn:aws:appsync:${AWS::Region}:${AWS::AccountId}:apis/${PacketCaptureApi.ApiId}/*"
+
+  PacketProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/PacketProcessor/
+      Handler: PacketProcessor::PacketProcessor.Function::FunctionHandler
+      Role: !GetAtt PacketProcessorRole.Arn
+      Environment:
+        Variables:
+          APPSYNC_HTTP_URL: !GetAtt PacketCaptureApi.Dns.Http
+          APPSYNC_API_KEY: !GetAtt PacketCaptureApiKey.ApiKey
+          APPSYNC_CHANNEL: /packets/capture
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PacketQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      BuildMethod: makefile
+
+  # ── UiHandler Lambda ─────────────────────────────────────────────────────────
+  # Serves the single-page capture UI via a public Lambda URL.
+
+  UiHandlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  UiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/UiHandler/
+      Handler: UiHandler::UiHandler.Function::FunctionHandler
+      Role: !GetAtt UiHandlerRole.Arn
+      Environment:
+        Variables:
+          APPSYNC_REALTIME_HOST: !GetAtt PacketCaptureApi.Dns.Realtime
+          APPSYNC_HTTP_HOST: !GetAtt PacketCaptureApi.Dns.Http
+          APPSYNC_API_KEY: !GetAtt PacketCaptureApiKey.ApiKey
+          APPSYNC_CHANNEL: /packets/capture
+      FunctionUrlConfig:
+        AuthType: NONE
+    Metadata:
+      BuildMethod: makefile
+
+Outputs:
+
+  UdpEndpoint:
+    Description: Plain-UDP capture endpoint (host:port)
+    Value: !Sub "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+
+  WireGuardEndpoint:
+    Condition: EnableWireGuard
+    Description: WireGuard capture endpoint (host:port)
+    Value: !Sub "${WireGuardListener.Domain}.proxylity.com:${WireGuardListener.Port}"
+
+  WireGuardServerPublicKey:
+    Condition: EnableWireGuard
+    Description: WireGuard server public key (configure in your client peer)
+    Value: !GetAtt WireGuardListener.WireGuardPublicKey
+
+  LiveUiUrl:
+    Description: Open this URL in a browser to watch packets arrive in real time
+    Value: !GetAtt UiHandlerFunctionUrl.FunctionUrl
