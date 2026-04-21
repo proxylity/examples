@@ -6,34 +6,11 @@ Use this project for quick, ad-hoc packet capture when local capture isn't conve
 
 ## System Diagram
 
-```mermaid
-graph LR
-
-subgraph proxylity
-  udp-listener["UDP Listener<br/>(plain UDP)"]
-  wg-listener["UDP Listener<br/>(WireGuard, optional)"]
-end
-
-subgraph customer aws
-  sqs["SQS Standard Queue"]
-  processor["PacketProcessor Lambda<br/>(C# / .NET 10)"]
-  appsync["AppSync Events API<br/>(/packets/capture channel)"]
-  ui["UiHandler Lambda<br/>(C# / .NET 10)<br/>Lambda URL"]
-end
-
-browser["Browser"]
-
-udp-sender["UDP client<br/>(plain or WireGuard)"]
-
-udp-sender --> udp-listener --> sqs
-udp-sender --> wg-listener  --> sqs
-sqs --> processor --> appsync
-browser -- "HTTP GET" --> ui
-browser -- "WebSocket subscribe" --> appsync
-```
+![Packet Capture Architecture](./packet-capture.svg)
 
 ## Features
 
+- **Pure Serverless** — Zero cost when not in use, quick to deploy and quick to tear down.
 - **Live, zero-storage capture** — packets are never written to a database; the only transient storage is the SQS queue.
 - **Dual-protocol ingress** — plain UDP and WireGuard listeners both funnel into the same pipeline.
 - **AppSync Events fan-out** — the browser subscribes directly to the AppSync Events channel over a WebSocket; any number of browser tabs see the same stream simultaneously.
