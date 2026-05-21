@@ -1,0 +1,160 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "REST API for managing RADIUS users and NAS records, with concurrent cross-region writes.",
+  "Parameters": {
+    "DeployedRegions": {
+      "Description": "Comma-separated list of regions where the RADIUS auth table is deployed. The API Lambda writes to the table in each region concurrently. Must include the region this stack is deployed in.",
+      "Type": "String"
+    },
+    "RadiusAuthStateTableName": {
+      "Description": "Name of the RADIUS auth state DynamoDB table. Must be the same name in every deployed region.",
+      "Type": "String"
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for the API Lambda function.",
+      "Type": "String",
+      "Default": "INFO",
+      "AllowedValues": [ "DEBUG", "INFO", "WARN", "ERROR" ]
+    },
+    "RadiusLogRetentionDays": {
+      "Description": "Number of days to retain API Lambda logs in CloudWatch.",
+      "Type": "Number",
+      "Default": 90,
+      "MinValue": 1,
+      "MaxValue": 3653
+    }
+  },
+  "Resources": {
+
+    "RadiusApiRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+
+    "RadiusApiRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "RadiusApiDynamoDBAccess",
+        "Roles": [ { "Ref": "RadiusApiRole" } ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadLocalTable",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:GetItem", "dynamodb:Scan" ],
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RadiusAuthStateTableName}"
+              }
+            },
+            {
+              "Sid": "WriteAllRegionTables",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:PutItem", "dynamodb:DeleteItem" ],
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/${RadiusAuthStateTableName}"
+              }
+            },
+            {
+              "Sid": "AllowKMSAccess",
+              "Effect": "Allow",
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:kms:*:${AWS::AccountId}:key/*"
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    "RadiusApi": {
+      "Type": "AWS::Serverless::Api",
+      "Properties": {
+        "StageName": "v1",
+        "Auth": {
+          "DefaultAuthorizer": "AWS_IAM"
+        }
+      }
+    },
+
+    "RadiusApiFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": {
+        "BuildMethod": "makefile"
+      },
+      "Properties": {
+        "CodeUri": "../src/radius-api-lambda/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "Timeout": 10,
+        "MemorySize": 256,
+        "Role": { "Fn::GetAtt": [ "RadiusApiRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "RADIUS_AUTH_STATE_TABLE": { "Ref": "RadiusAuthStateTableName" },
+            "DEPLOYED_REGIONS": { "Ref": "DeployedRegions" },
+            "LOG_LEVEL": { "Ref": "LambdaLogLevel" }
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": { "Ref": "LambdaLogLevel" },
+          "SystemLogLevel": "INFO",
+          "LogGroup": { "Ref": "RadiusApiFunctionLogGroup" }
+        },
+        "Events": {
+          "ListUsers":   { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/users",            "Method": "GET"    } },
+          "CreateUser":  { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/users",            "Method": "POST"   } },
+          "GetUser":     { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/users/{username}", "Method": "GET"    } },
+          "PutUser":     { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/users/{username}", "Method": "PUT"    } },
+          "DeleteUser":  { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/users/{username}", "Method": "DELETE" } },
+          "ListNas":     { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/nas",              "Method": "GET"    } },
+          "GetNas":      { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/nas/{identifier}", "Method": "GET"    } },
+          "PutNas":      { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/nas/{identifier}", "Method": "PUT"    } },
+          "DeleteNas":   { "Type": "Api", "Properties": { "RestApiId": { "Ref": "RadiusApi" }, "Path": "/nas/{identifier}", "Method": "DELETE" } }
+        }
+      }
+    },
+
+    "RadiusApiFunctionLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-radius-api" },
+        "RetentionInDays": { "Ref": "RadiusLogRetentionDays" }
+      }
+    }
+
+  },
+  "Outputs": {
+    "ApiUrl": {
+      "Description": "RADIUS management API base URL",
+      "Value": { "Fn::Sub": "https://${RadiusApi}.execute-api.${AWS::Region}.amazonaws.com/v1" }
+    },
+    "ApiId": {
+      "Description": "API Gateway REST API ID",
+      "Value": { "Ref": "RadiusApi" }
+    }
+  }
+}

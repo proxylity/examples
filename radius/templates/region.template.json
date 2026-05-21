@@ -32,6 +32,10 @@
         "WARN",
         "ERROR"
       ]
+    },
+    "DeployedRegions": {
+      "Description": "Comma-separated list of regions where this stack is deployed. Used by the API Lambda for cross-region DynamoDB writes.",
+      "Type": "String"
     }
   },
   "Resources": {
@@ -204,6 +208,9 @@
               "RadiusSharedStack",
               "Outputs.RadiusWriterFunctionArn"
             ]
+          },
+          "AuthStateTableName": {
+            "Fn::Sub": "${AWS::StackName}-auth-state"
           }
         },
         "Tags": {
@@ -243,6 +250,35 @@
         },
         "Tags": {
           "Purpose": "RADIUS Accounting Service",
+          "Stack": {
+            "Ref": "AWS::StackName"
+          }
+        }
+      }
+    },
+    "RadiusApiStack": {
+      "DependsOn": [
+        "RadiusAuthStack"
+      ],
+      "Type": "AWS::Serverless::Application",
+      "Properties": {
+        "Location": "./region-api.template.json",
+        "Parameters": {
+          "DeployedRegions": {
+            "Ref": "DeployedRegions"
+          },
+          "RadiusAuthStateTableName": {
+            "Fn::Sub": "${AWS::StackName}-auth-state"
+          },
+          "LambdaLogLevel": {
+            "Ref": "LambdaLogLevel"
+          },
+          "RadiusLogRetentionDays": {
+            "Ref": "RadiusLogRetentionDays"
+          }
+        },
+        "Tags": {
+          "Purpose": "RADIUS Management API",
           "Stack": {
             "Ref": "AWS::StackName"
           }
@@ -335,13 +371,10 @@
         ]
       }
     },
-    "RadiusAuthStateTableName": {
-      "Description": "Name of the RADIUS authentication state DynamoDB table",
+    "ApiUrl": {
+      "Description": "RADIUS management API base URL",
       "Value": {
-        "Fn::GetAtt": [
-          "RadiusAuthStack",
-          "Outputs.RadiusAuthStateTableName"
-        ]
+        "Fn::GetAtt": [ "RadiusApiStack", "Outputs.ApiUrl" ]
       }
     },
     "DashboardUrl": {

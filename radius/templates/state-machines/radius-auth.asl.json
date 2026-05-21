@@ -1,9 +1,9 @@
 {
     "Comment": "RADIUS Authentication State Machine. Query DDB for MAC or credentials matching the request IP and return Accept or Reject and metadata.",
     "QueryLanguage": "JSONata",
-    "StartAt": "Parse Radius Request Packet (1)",
+    "StartAt": "Parse Radius Request Packets",
     "States": {
-        "Parse Radius Request Packet (1)": {
+        "Parse Radius Request Packets": {
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
             "Arguments": {
@@ -325,15 +325,15 @@
                                 "Reply-Message": "{% $states.input & ' ' & $states.context.State.EnteredTime %}"
                             }
                         },
-                        "Next": "Add Request Proprerties to Output"
+                        "Next": "Add Request Properties to Output"
                     },
                     "Accept": {
                         "Output": "{% (\n  $classes:= $exists($states.input.user.groups.SS) ? $states.input.user.groups.SS : [];\n  $basic_attrs := {\n    'User-Name': $user_name,\n    'Acct-Session-Id': $session_id,\n    'Session-Timeout': $string($session_duration),\n    'Class': $join($classes, '␞')\n  };\n  $vlan_attrs := $length($vlan) > 0 ? {\n    'Tunnel-Type': \"13\",\n    'Tunnel-Medium-Type': \"6\",\n    'Tunnel-Private-Group-ID': $vlan\n  } : {};\n  \n  {\n    'code': 2,\n    'attributes': $merge([$basic_attrs, $vlan_attrs])\n  }\n) %}",
                         "QueryLanguage": "JSONata",
                         "Type": "Pass",
-                        "Next": "Add Request Proprerties to Output"
+                        "Next": "Add Request Properties to Output"
                     },
-                    "Add Request Proprerties to Output": {
+                    "Add Request Properties to Output": {
                         "Type": "Pass",
                         "End": true,
                         "Output": "{% $merge([{ 'tag': $tag, 'request_identifier': $request_identifier, 'request_authenticator': $request_authenticator }, $states.input]) %}"
@@ -341,9 +341,9 @@
                 }
             },
             "Items": "{% $exists($states.input.Messages) ? $states.input.Messages : [] %}",
-            "Next": "Write Radius Response Packet (1)"
+            "Next": "Write Radius Response Packets"
         },
-        "Write Radius Response Packet (1)": {
+        "Write Radius Response Packets": {
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
             "Arguments": {

@@ -19,7 +19,7 @@
                         "Arguments": {
                             "FunctionName": "${RADIUS_PARSER_FUNCTION_ARN}",
                             "Payload": {
-                                "packet_data": "{% $states.input.Items.Data %}"
+                                "packet_data": "{% [ $states.input.Items.Data ] %}"
                             }
                         },
                         "Retry": [

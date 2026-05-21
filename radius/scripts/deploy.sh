@@ -20,11 +20,11 @@ set -ex
 aws cloudformation deploy \
     --template-file ./templates/global.template.json \
     --stack-name ${STACK_NAME}-global \
-    --s3-bucket ${DEPLOY_BUCKET_NAME_PREFIX}${AWS_REGION} \
-    --s3-prefix ${DEPLOY_BUCKET_PATH_PREFIX}${STACK_NAME} \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides \
         ClientCidrToAllow="${ALLOWED_IPS}" \
+        Transport="${TRANSPORT}" \
+        FirstPeerPublicKey="${PEER_PUBLIC_KEY}" \
     --no-fail-on-empty-changeset \
     --region ${AWS_REGION}
 
@@ -59,25 +59,13 @@ sam build \
 
 # Next deploy the app to 
 for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
-    # bucket name for the target region
-    DEPLOY_BUCKET="${DEPLOY_BUCKET_NAME_PREFIX}${DEPLOY_REGION}"
-
-    # prepare parameter overrides
-    PARAMETER_OVERRIDES="--parameter-overrides ClientCidrToAllow=${ALLOWED_IPS}"
-    if [ ! -z "${DOMAIN_NAME}" ]; then
-        PARAMETER_OVERRIDES="${PARAMETER_OVERRIDES} DomainName=${DOMAIN_NAME} HostedZoneId=${HOSTED_ZONE_ID}"
-    fi
-    if [ ! -z "${DNS_LOG_RETENTION}" ]; then
-        PARAMETER_OVERRIDES="${PARAMETER_OVERRIDES} DnsLogRetentionDays=${DNS_LOG_RETENTION}"
-    fi
-
     # deploy the stack
     sam deploy \
         --stack-name ${STACK_NAME} \
-        --s3-bucket ${DEPLOY_BUCKET} \
-        --s3-prefix ${DEPLOY_BUCKET_PATH_PREFIX}${STACK_NAME} \
+        --resolve-s3 \
         --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
         --no-fail-on-empty-changeset \
         --region ${DEPLOY_REGION} \
-        ${PARAMETER_OVERRIDES}
+        --parameter-overrides \
+            DeployedRegions="$(echo ${DEPLOY_TO_REGIONS} | tr ' ' ',')"
 done

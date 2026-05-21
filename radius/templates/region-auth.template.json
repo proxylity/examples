@@ -38,6 +38,10 @@
     "RadiusWriterFunctionArn": {
       "Description": "ARN of the RADIUS packet writer Lambda function",
       "Type": "String"
+    },
+    "AuthStateTableName": {
+      "Description": "Explicit name for the RADIUS auth state DynamoDB table. Must be the same value in every deployed region.",
+      "Type": "String"
     }
   },
   "Conditions": {
@@ -93,6 +97,24 @@
     }
   },
   "Resources": {
+    "DeliveryLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/radius/RadiusAuth/DeliveryLogs"
+        },
+        "RetentionInDays": 30
+      }
+    },
+    "ArchiveDeliveryLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/radius/RadiusAuth/ArchiveDeliveryLogs"
+        },
+        "RetentionInDays": 30
+      }
+    },
     "RadiusAuthDataBucket": {
       "Type": "AWS::S3::Bucket",
       "Properties": {
@@ -471,6 +493,7 @@
     "RadiusAuthStateTable": {
       "Type": "AWS::DynamoDB::Table",
       "Properties": {
+        "TableName": { "Ref": "AuthStateTableName" },
         "BillingMode": {
           "Fn::If": [
             "AuthTableCapacitySpecified",
@@ -677,61 +700,66 @@
               "Action": "sts:AssumeRole"
             }
           ]
-        },
-        "Policies": [
+        }
+      }
+    },
+    "RadiusAuthFirehosePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Roles": [
           {
-            "PolicyName": "RadiusAuthFirehosePolicy",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
+            "Ref": "RadiusAuthFirehoseRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject"
+              ],
+              "Resource": [
                 {
-                  "Effect": "Allow",
-                  "Action": [
-                    "s3:AbortMultipartUpload",
-                    "s3:GetBucketLocation",
-                    "s3:GetObject",
-                    "s3:ListBucket",
-                    "s3:ListBucketMultipartUploads",
-                    "s3:PutObject"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::GetAtt": [
-                        "RadiusAuthDataBucket",
-                        "Arn"
-                      ]
-                    },
-                    {
-                      "Fn::Sub": [
-                        "${BucketArn}/auth-logs/*",
-                        {
-                          "BucketArn": {
-                            "Fn::GetAtt": [
-                              "RadiusAuthDataBucket",
-                              "Arn"
-                            ]
-                          }
-                        }
-                      ]
-                    }
+                  "Fn::GetAtt": [
+                    "RadiusAuthDataBucket",
+                    "Arn"
                   ]
                 },
                 {
-                  "Effect": "Allow",
-                  "Action": [
-                    "kms:Decrypt",
-                    "kms:GenerateDataKey"
-                  ],
-                  "Resource": [
+                  "Fn::Sub": [
+                    "${BucketArn}/auth-logs/*",
                     {
-                      "Ref": "RadiusKmsKeyArn"
+                      "BucketArn": {
+                        "Fn::GetAtt": [
+                          "RadiusAuthDataBucket",
+                          "Arn"
+                        ]
+                      }
                     }
                   ]
                 }
               ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Resource": [
+                {
+                  "Ref": "RadiusKmsKeyArn"
+                }
+              ]
             }
-          }
-        ]
+          ]
+        }
       }
     },
     "RadiusAuthFirehose": {

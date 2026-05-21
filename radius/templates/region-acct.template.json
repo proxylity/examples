@@ -49,6 +49,24 @@
     }
   },
   "Resources": {
+    "DeliveryLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/radius/RadiusAcct/DeliveryLogs"
+        },
+        "RetentionInDays": 30
+      }
+    },
+    "ArchiveDeliveryLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/radius/RadiusAcct/ArchiveDeliveryLogs"
+        },
+        "RetentionInDays": 30
+      }
+    },
     "RadiusAcctDataBucket": {
       "Type": "AWS::S3::Bucket",
       "Properties": {

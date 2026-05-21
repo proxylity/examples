@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "radius-parser-lambda", "src
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "radius-writer-lambda", "src\radius-writer-lambda\radius-writer-lambda.csproj", "{330B432C-C059-41D0-9274-984AF3834171}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "radius-api-lambda", "src\radius-api-lambda\radius-api-lambda.csproj", "{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +89,18 @@ Global
 		{330B432C-C059-41D0-9274-984AF3834171}.Release|x64.Build.0 = Release|Any CPU
 		{330B432C-C059-41D0-9274-984AF3834171}.Release|x86.ActiveCfg = Release|Any CPU
 		{330B432C-C059-41D0-9274-984AF3834171}.Release|x86.Build.0 = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|x64.Build.0 = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Debug|x86.Build.0 = Debug|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|x64.ActiveCfg = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|x64.Build.0 = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|x86.ActiveCfg = Release|Any CPU
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -98,5 +112,6 @@ Global
 		{70DA8132-CAE7-4C5C-98A7-36357D1402EA} = {F769DD80-CBD5-C04B-9880-E0A24BB386CB}
 		{767D6238-938E-4D12-B1C9-49EED96E3DA3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{330B432C-C059-41D0-9274-984AF3834171} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{4F964EF3-1358-4DB3-9B93-6EFE38C778C8} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

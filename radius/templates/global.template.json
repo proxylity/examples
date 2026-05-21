@@ -7,6 +7,20 @@
       "Description": "The CIDR describing which IP addresses should be allowed to use the RADIUS listeners. Default is open/everyone.",
       "Type": "String",
       "Default": "0.0.0.0/0"
+    },
+    "FirstPeerPublicKey": {
+      "Description": "The public key of the first peer RADIUS client (authenticator) that will connect to the RADIUS authentication listener. 32 bytes, base64 encocded. Not required when Transport is UDP.",
+      "Type": "String",
+      "Default": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "MinLength": 44,
+      "MaxLength": 44,
+      "AllowedPattern": "^[A-Za-z0-9+/]{43}=$"
+    },
+    "Transport": {
+      "Description": "The transport protocol to use for the RADIUS listeners.",
+      "Type": "String",
+      "Default": "WireGuard",
+      "AllowedValues": [ "WireGuard", "UDP" ]
     }
   },
   "Mappings": {
@@ -20,6 +34,9 @@
         }
       }
     }
+  },
+  "Conditions": {
+    "CreateWireGuardListener": { "Fn::Equals": [ { "Ref": "Transport" }, "WireGuard" ] }
   },
   "Resources": {
     "ProxylityRole": {
@@ -44,42 +61,38 @@
               "Action": "sts:AssumeRole"
             }
           ]
-        },
-        "Policies": [
-          {
-            "PolicyName": "AllowCloudWatch",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Sid": "AllowPutMetricData",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudwatch:PutMetricData"
-                  ],
-                  "Resource": "*"
-                },
-                {
-                  "Sid": "AllowLogsActions",
-                  "Effect": "Allow",
-                  "Action": [
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                  ],
-                  "Resource": [
-                    { "Fn::Sub": "${DestinationLogs.Arn}:*" }
-                  ]
-                }
-              ]
-            }
-          }
-        ]
+        }
       }
     },
-    "DestinationLogs": {
-      "Type": "AWS::Logs::LogGroup",
+    "ProxylityRolePolicy": {
+      "Type": "AWS::IAM::Policy",
       "Properties": {
-        "RetentionInDays": 30
+        "PolicyName": "AllowCloudWatch",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowPutMetricData",
+              "Effect": "Allow",
+              "Action": [
+                "cloudwatch:PutMetricData"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "AllowLogsActions",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/radius/*:*" }
+              ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "ProxylityRole" } ]
       }
     },
     "RadiusAuthListener": {
@@ -105,9 +118,22 @@
           "Fn::Sub": "${AWS::StackName}-radius-listener"
         },
         "Description": "RADIUS authentication listener.",
-        "Protocols": [
-          "udp"
-        ],
+        "Protocols": {
+          "Fn::If": [ "CreateWireGuardListener", [ "wg" ], [ "udp" ] ]
+        },
+        "DecapsulatedDelivery": true,
+        "Peers": {
+          "Fn::If": [
+            "CreateWireGuardListener",
+            [
+              {
+                "PublicKey": { "Ref": "FirstPeerPublicKey" },
+                "AllowedIPs": [ "0.0.0.0/0", "::/0" ]
+              }
+            ],
+            { "Ref": "AWS::NoValue" }
+          ]
+        },
         "ClientRestrictions": {
           "Networks": [
             {
@@ -134,9 +160,7 @@
               "TimeoutInSeconds": 0.1
             },
             "MetricsEnabled": true,
-            "LogGroupName": {
-              "Ref": "DestinationLogs"
-            }
+            "LogGroupName": "/radius/RadiusAuth/DeliveryLogs"
           },
           {
             "Name": {
@@ -156,9 +180,7 @@
               "TimeoutInSeconds": 1.0
             },
             "MetricsEnabled": true,
-            "LogGroupName": {
-              "Ref": "DestinationLogs"
-            }
+            "LogGroupName": "/radius/RadiusAuth/ArchiveDeliveryLogs"
           }
         ]
       }
@@ -186,9 +208,22 @@
           "Fn::Sub": "${AWS::StackName}-acct-listener"
         },
         "Description": "RADIUS accounting listener.",
-        "Protocols": [
-          "udp"
-        ],
+        "Protocols": {
+          "Fn::If": [ "CreateWireGuardListener", [ "wg" ], [ "udp" ] ]
+        },
+        "DecapsulatedDelivery": true,
+        "Peers": {
+          "Fn::If": [
+            "CreateWireGuardListener",
+            [
+              {
+                "PublicKey": { "Ref": "FirstPeerPublicKey" },
+                "AllowedIPs": [ "0.0.0.0/0", "::/0" ]
+              }
+            ],
+            { "Ref": "AWS::NoValue" }
+          ]
+        },
         "ClientRestrictions": {
           "Networks": [
             {
@@ -215,9 +250,7 @@
               "TimeoutInSeconds": 0.5
             },
             "MetricsEnabled": true,
-            "LogGroupName": {
-              "Ref": "DestinationLogs"
-            }
+            "LogGroupName": "/radius/RadiusAcct/DeliveryLogs"
           },
           {
             "Name": {
@@ -237,9 +270,7 @@
               "TimeoutInSeconds": 1.0
             },
             "MetricsEnabled": true,
-            "LogGroupName": {
-              "Ref": "DestinationLogs"
-            }
+            "LogGroupName": "/radius/RadiusAcct/ArchiveDeliveryLogs"
           }
         ]
       }
@@ -373,33 +404,35 @@
         },
         "ManagedPolicyArns": [
           "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
-        ],
-        "Policies": [
-          {
-            "PolicyName": "AllowLogging",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "logs:CreateLogDelivery",
-                    "logs:CreateLogStream",
-                    "logs:GetLogDelivery",
-                    "logs:UpdateLogDelivery",
-                    "logs:DeleteLogDelivery",
-                    "logs:ListLogDeliveries",
-                    "logs:PutLogEvents",
-                    "logs:PutResourcePolicy",
-                    "logs:DescribeResourcePolicies",
-                    "logs:DescribeLogGroups"
-                  ],
-                  "Resource": "*"
-                }
-              ]
-            }
-          }
         ]
+      }
+    },
+    "StepFunctionsExecutionRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowLogging",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogDelivery",
+                "logs:CreateLogStream",
+                "logs:GetLogDelivery",
+                "logs:UpdateLogDelivery",
+                "logs:DeleteLogDelivery",
+                "logs:ListLogDeliveries",
+                "logs:PutLogEvents",
+                "logs:PutResourcePolicy",
+                "logs:DescribeResourcePolicies",
+                "logs:DescribeLogGroups"
+              ],
+              "Resource": "*"
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "StepFunctionsExecutionRole" } ]
       }
     },
     "EventBridgeRole": {
@@ -440,6 +473,20 @@
     }
   },
   "Outputs": {
+    "AuthListenerWireGuardPublicKey": {
+      "Description": "WireGuard public key of the RADIUS authentication listener -- configure as the peer PublicKey in your WireGuard client",
+      "Condition": "CreateWireGuardListener",
+      "Value": {
+        "Fn::GetAtt": [ "RadiusAuthListener", "WireGuardPublicKey" ]
+      }
+    },
+    "AcctListenerWireGuardPublicKey": {
+      "Description": "WireGuard public key of the RADIUS accounting listener -- configure as the peer PublicKey in your WireGuard client",
+      "Condition": "CreateWireGuardListener",
+      "Value": {
+        "Fn::GetAtt": [ "RadiusAcctListener", "WireGuardPublicKey" ]
+      }
+    },
     "RadiusAcctFirehoseRoleArn": {
       "Description": "ARN of the IAM role for Kinesis Firehose to write accounting data to S3",
       "Value": {

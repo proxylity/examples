@@ -1,93 +1,49 @@
-# RADIUS Authorization and Accounting with UDP Gateway
+# Serverless RADIUS on AWS
 
-This example demonstrates a cloud-based RADIUS authorization and accounting system using Proxylity's UDP Gateway service. The current implementation provides a foundation with basic packet processing and can be extended to include comprehensive enterprise-class security features.
+Run a fully serverless RADIUS authentication and accounting server on AWS — no EC2, no FreeRADIUS to maintain, no capacity planning. Traffic between your network gear and Proxylity travels inside a WireGuard tunnel, so RADIUS exchanges are encrypted in transit without any additional configuration. Lambda handles everything on the cloud side.
 
-## Architecture Overview
+This is a complete, working implementation tested with Unifi guest portals. Running on the Proxylity UDP Gateway platform means it works equally well for a guest network at home as it does for centralizing authentication for a global portfollio of corporate or hospitality properties.
 
-The system uses two UDP Gateway listeners for RADIUS authentication and accounting, separating the types of packets by port (as is traditional with RADIUS).  Each listener is configured to deliver inbound packets to two destinations: one to generate a response, and the other to archive and process the requests.
-
-The authentication flow handles RADIUS authentication requests using step functions and Kinesis Firehose.  Authenticates requests against DynamoDB records and processes request archives with Bedrock LLM.
-
-The accounting flow handles RADIUS accounting requests using Lambda and Kinesis Firehose. It processes those requests to update per-session packet count and traffic volume aggregates in S3.
+Users and devices are stored in DynamoDB and replicated globally, authentication responses go back to your network gear in real time, and every RADIUS exchange is archived to S3 for compliance and analysis.
 
 <img src="architecture.png" title="RADIUS on UDP Gateway Architecture" width=600 />
 
-## Current Implementation Status
+## Who This Is For
 
-⚠️ **Note**: This is a foundational implementation that provides:
-- Basic UDP packet reception, responses and logging via Proxylity UDP Gateway
-- Infrastructure framework for RADIUS processing
-- Secure data storage and encryption setup
-- Multi-region deployment capability
+If you need a RADIUS server for **MAC Authentication Bypass (MAB)**, **PAP**, or **CHAP** — hotspot gateways, captive portals, VPN concentrators, or network gear that authenticates devices by MAC address — this replaces the traditional FreeRADIUS or Windows NPS VM with a fully managed, auto-scaling, multi-region serverless stack deployed from a single `deploy.sh`.
 
-## Components
+Note: this implementation does not support EAP (PEAP, EAP-TLS, etc.), so it is **not** a drop-in for WPA2-Enterprise or wired 802.1X port authentication, which require EAP tunneling through the NAS.
 
-### Global Resources (`global.template.json`)
-- UDP Gateway listeners for authentication and accounting
-- CloudWatch Log Group for destination delivery logging (30-day retention)
-- IAM roles for Lambda functions and Proxylity service
-- Cross-region permissions for multi-region deployment
+## What It Does
 
-### Regional Resources (`region.template.json`)
+**Authentication**: Receives Access-Request packets, looks up the user or device in DynamoDB, and returns an Access-Accept or Access-Reject. Supports MAC authentication bypass, PAP, and CHAP. On accept, assigns a VLAN and session timeout from the user or NAS record.
 
-The regional deployment uses a nested template approach. It creates a CloudWatch dashboard for observability, and orchestrates the creation of nested stacks:
+**Accounting**: Receives Accounting-Request packets (Start, Stop, Interim-Update), acknowledges them, and archives the full session history to S3 organized by session ID.
 
-**Shared Infrastructure:** (`region-shared.template.json`)
-- KMS key and Alias for encryption
-- RADIUS packet parser and writer Lambda functions
-
-**Nested Authentication Stack (`region-auth.template.json`):**
-- Authentication Lambda function
-- DynamoDB table for session state tracking
-- CloudWatch log groups and dead letter queues
-- IAM policies for authentication services
-
-**Nested Accounting Stack (`region-acct.template.json`):**
-- Accounting Lambda function
-- CloudWatch log groups and dead letter queues
-- IAM policies for accounting services
-
-## Security Features
-
-### Encryption
-- **KMS encryption** for all data at rest (DynamoDB and CloudWatch Logs)
-- **Customer-managed keys** for enhanced control
-- **Automatic key rotation** can be enabled
-
-### Access Control
-- **Least privilege IAM policies** with specific resource ARNs
+**Anomaly detection**: Auth traffic is periodically analyzed by Bedrock (Nova Lite) to surface unusual authentication patterns — repeated failures from new MACs, unexpected NAS identifiers, or geographic anomalies.
 
 ## Deployment
 
 ### Prerequisites
-1. Active subscription to Proxylity UDP Gateway in AWS Marketplace
-2. AWS CLI (`aws`) and SAM CLI (`sam`) configured with appropriate permissions
-3. The .Net SDK version 8 installed
-4. The `make` and `jq` tools installed
+- Active subscription to [Proxylity UDP Gateway](https://aws.amazon.com/marketplace) in AWS Marketplace
+- AWS CLI and SAM CLI configured with appropriate permissions
+- .NET SDK 8
+- `jq`
 
-### Using Automated Scripts (Recommended)
-The repository includes deployment scripts for streamlined deployment accross multiple regions:
+### Deploy
+
+To control which regions are supported set `DEPLOY_TO_REGIONS` in `scripts/configure.sh` before running `deploy.sh`.  The default is to support `us-west-2`, `us-east-1` and `eu-west-1` with local resources.
 
 ```bash
-# Choose or create deployment buckets (note the extra . to preseve envars)
-. ./scripts/prerequisites.sh
-
-# Run deployment script
+# Deploy global stack + regional stack(s)
 AWS_REGION=us-west-2 ./scripts/deploy.sh
 ```
 
+The deploy script handles the global stack first (listeners and IAM), captures its outputs, then builds and deploys the regional stack with the Lambda functions, DynamoDB table, Kinesis Firehose, and Step Functions state machine. SAM manages its own S3 bucket for deployment artifacts automatically.
+
 ### Manual Deployment
-For manual deployment or to understand the deployment process in detail, follow these steps:
 
-#### Step 0: Run Checks (Optional)
-If your environment has `cfn-lint` installed, you can run `checks.sh` to verify the CloudFormation templates are valid:
-
-```bash
-./scripts/checks.sh
-```
-
-#### Step 1: Deploy Global Stack
-Deploy the global stack that creates the UDP Gateway listeners and IAM roles:
+#### Step 1: Deploy the Global Stack
 
 ```bash
 aws cloudformation deploy \
@@ -98,9 +54,9 @@ aws cloudformation deploy \
     ClientCidrToAllow="$(curl -s checkip.amazonaws.com)/32"
 ```
 
-**NOTE:** The snippet above restricts access to the listeners from *only* your current public IP address. If you want to allow access from other sources, update the value of `ClientCidrToAllow` to specify additional CIDR blocks.
+`ClientCidrToAllow` restricts which source IPs the UDP Gateway will accept packets from. Set it to your network's egress CIDR(s) — the public IP(s) your access points or VPN concentrator uses to reach the internet.
 
-Next, capture the outputs of the global stack and transform them into JSON format for consumption by regional stacks using `FnTransform` with `AWS::Include` in the regional stack's `Mappings`, and `Fn::FindInMap` to extract the values needed.
+Capture the global stack outputs for the regional stack:
 
 ```bash
 aws cloudformation describe-stacks \
@@ -112,92 +68,146 @@ aws cloudformation describe-stacks \
 jq "[.Outputs[]|{(.OutputKey):.OutputValue}]|add" radius-global.outputs > global-stack-outputs.json
 ```
 
-#### Step 2: Build and Deploy Regional Stacks
-Build the .NET Lambda functions and deploy using SAM:
+#### Step 2: Build and Deploy Regional Stack
 
 ```bash
-# Build the application
 sam build --template-file templates/region.template.json
 
-# Deploy to target region (e.g., us-west-2)
 sam deploy \
   --stack-name radius-region \
-  --s3-bucket <your-deployment-bucket> \
+  --resolve-s3 \
   --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
   --parameter-overrides \
     RadiusLogRetentionDays=90 \
     LambdaLogLevel="INFO"
 ```
 
+## Setting Up Your Network Gear
+
+Proxylity UDP Gateway listeners use WireGuard as the transport — RADIUS packets from your NAS travel inside a WireGuard tunnel rather than as plain UDP across the internet. This means your network gear doesn't talk directly to Proxylity; instead, a WireGuard client on your gateway encapsulates the traffic. The NAS (access point, controller) is configured to send RADIUS to the WireGuard tunnel IP rather than a public internet address, so only that specific traffic routes through the tunnel and everything else continues normally.
+
+After deployment, capture the outputs you'll need:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name radius-global \
+  --query "Stacks[0].Outputs" \
+  > global-outputs.json
+
+export AUTH_ENDPOINT=$(jq -r '.[]|select(.OutputKey=="AuthEndpoint")|.OutputValue' global-outputs.json)
+export ACCT_ENDPOINT=$(jq -r '.[]|select(.OutputKey=="AcctEndpoint")|.OutputValue' global-outputs.json)
+export AUTH_WG_KEY=$(jq -r '.[]|select(.OutputKey=="AuthListenerWireGuardPublicKey")|.OutputValue' global-outputs.json)
+export ACCT_WG_KEY=$(jq -r '.[]|select(.OutputKey=="AcctListenerWireGuardPublicKey")|.OutputValue' global-outputs.json)
+```
+
+The `configure.sh` script generates a WireGuard key pair automatically (`peer_private.key` / `peer_public.key`) during deployment. The public key from that pair is registered with both listeners as `FirstPeerPublicKey`.
+
+To populate users, write records to the DynamoDB `RadiusAuthStateTable` with partition key `USER#{username}`, sort key `#CONFIG`, and include `password`, `vlan`, and optionally `groups`. For MAC authentication bypass the system automatically creates user records from Calling-Station-Id on first successful auth.
+
+### UniFi
+
+The UDM/UDM-Pro acts as the WireGuard client. Configure two VPN client tunnels — one per listener — then point the RADIUS server profile at the tunnel IPs.
+
+**Step 1 — Create the WireGuard tunnel config files**
+
+Auth tunnel (`radius-auth.conf`):
+```ini
+[Interface]
+PrivateKey = <contents of peer_private.key>
+Address = 10.10.10.20/32
+
+[Peer]
+PublicKey = ${AUTH_WG_KEY}
+Endpoint = ${AUTH_ENDPOINT}
+AllowedIPs = 10.10.10.21/32
+PersistentKeepalive = 25
+```
+
+Acct tunnel (`radius-acct.conf`):
+```ini
+[Interface]
+PrivateKey = <contents of peer_private.key>
+Address = 10.10.10.22/32
+
+[Peer]
+PublicKey = ${ACCT_WG_KEY}
+Endpoint = ${ACCT_ENDPOINT}
+AllowedIPs = 10.10.10.23/32
+PersistentKeepalive = 25
+```
+
+> `AllowedIPs` scoped to a single `/32` means only packets destined for that tunnel IP are routed through WireGuard — all other traffic (internet, LAN) is unaffected.
+
+**Step 2 — Add the tunnels to the UDM**
+
+1. Go to **Settings > VPN > VPN Client** and select **Add WireGuard Client**
+2. Upload `radius-auth.conf` — repeat for `radius-acct.conf`
+3. Confirm both show **Connected** status
+
+**Step 3 — Add the RADIUS server profile**
+
+1. Go to **Settings > Networks > RADIUS Servers** and select **Create New**
+2. Set the authentication server address to `10.10.10.21` and port to `1812`
+3. Set the accounting server address to `10.10.10.23` and port to `1813`
+4. Set the shared secret to match `RadiusSharedSecret`
+
+**MAC Authentication Bypass:**
+1. Go to **Settings > WiFi**, select your SSID, and enable **RADIUS MAC Authentication**
+2. Set the **MAC Address Format** to `AABBCCDDEEFF` (no separators, uppercase) — this must match the key format in DynamoDB
+3. Select the RADIUS profile created above
+
+When a device connects, UniFi sends its MAC address as both username and password. The stack looks up `USER#{MAC}` in DynamoDB; on match it returns an Access-Accept. For VLAN assignment include `vlan`, `tunnel_type` (`13`), and `tunnel_medium_type` (`6`) in the DynamoDB record.
+
+**Hotspot / Captive Portal:**
+1. Go to **Settings > WiFi** (or **Settings > Networks** for a whole VLAN), select your SSID, and enable **Hotspot Portal > Captive Portal**
+2. Under **Authentication**, choose **RADIUS** and select the profile created above
+
+Guests enter credentials on the captive portal page; UniFi sends them to RADIUS as a PAP Access-Request. Add user records to DynamoDB with a plaintext `password` field.
+
 ## Configuration Parameters
 
-### Global Template Parameters
-- **ClientCidrToAllow**: CIDR block for allowed client IP addresses (default: 0.0.0.0/0)
+| Parameter | Default | Description |
+|---|---|---|
+| `ClientCidrToAllow` | `0.0.0.0/0` | Source CIDR(s) permitted by the UDP Gateway listeners |
+| `RadiusSharedSecret` | *(required)* | RADIUS shared secret — must match what's configured on your NAS |
+| `RadiusLogRetentionDays` | `89` | CloudWatch log retention |
+| `AuthStateTableReadCapacity` | `0` | DynamoDB read capacity (0 = on-demand) |
+| `AuthStateTableWriteCapacity` | `0` | DynamoDB write capacity (0 = on-demand) |
+| `LambdaLogLevel` | `INFO` | Lambda log verbosity |
 
-### Regional Template Parameters
-- **RadiusLogRetentionDays**: Log retention period in days (default: 89)
-- **AuthStateTableReadCapacity**: DynamoDB read capacity (default: 0 = on-demand)
-- **AuthStateTableWriteCapacity**: DynamoDB write capacity (default: 0 = on-demand)
-- **LambdaLogLevel**: Log level for Lambda functions (default: INFO)
+## How It's Put Together
 
-Note: The regional template retrieves global stack outputs from the JSON file created in Step 1 using the `jq` command above. 
+The stack is split into a global CloudFormation template (deployed once) and regional SAM templates (deployed per region).
 
-## Monitoring and Observability
+**Global stack** creates the Proxylity UDP Gateway listeners — one for auth (port 1812) and one for accounting (port 1813). Each listener has two destinations: one that invokes the main processing Lambda and one that feeds Kinesis Firehose for archiving. IAM roles for all components are also created here so they can be referenced across regions.
 
-### CloudWatch Dashboard
-Each regional deployment creates a CloudWatch dashboard with:
-- Lambda function metrics (invocations, errors, duration)
-- DynamoDB capacity utilization
+**Regional stacks** are nested:
+- `region-shared.template.json` — KMS key, RADIUS parser Lambda, RADIUS writer Lambda
+- `region-auth.template.json` — Auth Lambda, Step Functions state machine, DynamoDB table, Firehose → S3, Bedrock aggregation Lambda
+- `region-acct.template.json` — Accounting Lambda, Firehose → S3, distributed Step Functions processing for session archiving
 
-### Metrics and Alarms
-- **Lambda errors**: Automatically tracked with CloudWatch metrics
-- **DynamoDB throttling**: Monitor through capacity utilization metrics
-- **Dead letter queues**: Monitor message counts for error detection
-- **UDP Gateway destinations**: Custom CloudWatch metrics enabled to track packet traffic and error counts
+**Authentication flow**: The auth Lambda receives a batch of up to 50 packets from Proxylity, invokes a Step Functions Express Workflow per packet (synchronously), and returns the response batch. The state machine handles all the logic: parsing the packet, querying DynamoDB for the user and NAS record in parallel, checking credentials (PAP/CHAP/MAC), storing the anticipated session, and calling the writer Lambda to construct the binary response.
 
-### Current Logging
-- **Packet Logging**: Lambda functions log received packet details
-- **CloudWatch Logs**: Centralized logging for Lambda and Step Functions executions, and Destination delivery issues
+**Accounting flow**: The accounting Lambda processes packets directly without Step Functions — it validates the request, constructs the Accounting-Response, and returns it. A separate Firehose destination archives all packets; an EventBridge rule triggers a distributed Step Functions map execution to parse and organize them into S3 by session ID.
 
-## Current Data Storage
+## Monitoring
 
-### Authentication State (DynamoDB)
-- **Table**: Created by nested authentication stack
-- **Encryption**: Customer-managed KMS key
-- **Capacity**: Configurable (on-demand by default)
+Each regional deployment creates a CloudWatch dashboard with Lambda invocations/errors/duration, DynamoDB capacity, and Proxylity destination delivery metrics (packet volume, success/error counts, batch latency).
 
-### Request and Log Storage (CloudWatch Logs and S3)
-- **Encryption**: Customer-managed KMS key
-- **Logs**: Lambda and StepFunctions execution logs are stored in CloudWatch Logs with configurable retention
-- **S3**: RADIUS Requests are stored in batches in S3. Parsed content of accounting packets and calculated aggregates as well.
-
-## Scaling Considerations
-
-### Lambda Concurrency
-- Default concurrency limits may apply
-- Consider reserved concurrency for predictable workloads
-- Monitor throttling metrics for performance optimization
-
-### DynamoDB Capacity
-- Default configuration uses on-demand capacity for flexible scaling
-- Consider provisioned capacity for predictable workloads
-- Monitor capacity utilization metrics
-
-### UDP Gateway Limits
-- Free plan limits may apply
-- Monitor UDP Gateway destination metrics in CloudWatch for packet traffic and error analysis
+Log groups:
+- `/radius/RadiusAuth/DeliveryLogs` — Proxylity delivery events for the auth destination
+- `/radius/RadiusAcct/DeliveryLogs` — Proxylity delivery events for the accounting destination
+- `/aws/lambda/{stack-name}-radius-*` — Lambda function execution logs
 
 ## Troubleshooting
 
-### Common Issues
-1. **Permission Errors**: Verify IAM roles and cross-stack references in global-outputs.json
-2. **Lambda Timeouts**: Check function timeout settings and CloudWatch logs
-3. **DynamoDB Throttling**: Monitor capacity utilization (on-demand scaling should handle most cases)
-4. **Nested Stack Deployment**: Ensure proper SAM CLI setup and S3 bucket permissions
-5. **Destination Delivery Failures**: Check the destination logs in CloudWatch for delivery errors
+**Auth requests not getting responses**: Check `/radius/RadiusAuth/DeliveryLogs` first — delivery errors from Proxylity (timeouts, Lambda errors) show up there before CloudWatch Lambda logs.
 
-### Debug Resources
-- **CloudWatch Logs**: Review function execution logs and packet processing details
+**Access-Reject for a known user**: The DynamoDB key is `USER#{username}` with sort key `#CONFIG`. Verify the record exists and the `password` attribute matches what the client is sending. For PAP, the password is recovered by XORing the ciphertext against successive MD5 digests of `(shared_secret || authenticator || previous_block)` per RFC 2865 §5.2; make sure `RadiusSharedSecret` matches your NAS config exactly.
+
+**CHAP failures**: The CHAP hash is calculated from the CHAP ID, user password, and CHAP challenge per RFC 2865. Confirm the shared secret and that the NAS is sending a CHAP-Challenge attribute.
+
+**Nested stack deployment errors**: Ensure the `global-stack-outputs.json` file is present and current before deploying the regional stack. The regional templates reference it via `AWS::Include`.
 - **Destination Logs**: Review UDP Gateway destination delivery logs for troubleshooting
 - **CloudWatch Dashboard**: Monitor Lambda and DynamoDB metrics
 
@@ -222,14 +232,6 @@ cd src/radius-acct-lambda
 make build-Lambda
 ```
 
-### Extending the Implementation
-To implement full RADIUS processing:
-
-1. **Add RADIUS Protocol Parsing**: Implement additional RADIUS packet structure parsing needed, if any (e.g. VSAs)
-2. **Add Authentication Logic**: Integrate with authentication databases
-3. **Add Response Generation**: Generate appropriate RADIUS responses
-4. **Add Session Management**: Implement a session state tracking in DynamoDB
-
 ## Template Architecture
 
 ### Nested Template Structure
@@ -246,10 +248,43 @@ region.template.json (Parent)
 - Nested templates reference parent resources via parameters
 - Global stack outputs accessed via included JSON mapping
 
+## Security Model
+
+### RADIUS/UDP over WireGuard is Sound
+
+RADIUS has a reputation for weak transport security, and that reputation is largely earned for bare UDP deployments where packets cross untrusted networks unencrypted. This stack does not do that. Every RADIUS packet travels inside a WireGuard tunnel (ChaCha20-Poly1305 with mutual authentication) before it reaches the internet. RADIUS over WireGuard is the same relationship that exists between HTTP and TLS. Calling PAP or CHAP over WireGuard insecure is like calling HTTPS insecure because TCP has no native encryption.
+
+Within that model:
+
+- **PAP**: The user password is XOR-obfuscated with an MD5 digest of the shared secret and a per-packet authenticator inside the RADIUS packet. Over WireGuard, the outer ChaCha20 encryption is the actual confidentiality mechanism.
+- **CHAP**: The password never leaves the client in any form — only an MD5 hash of `(CHAP-ID || password || challenge)` is transmitted. This inner protection holds even if the tunnel were compromised at the RADIUS layer.
+- **MAC auth (MAB)**: The MAC address is both username and password. Security here is entirely about whether your NAS is trustworthy, not about the RADIUS exchange.
+
+### BlastRADIUS in Context
+
+[BlastRADIUS (CVE-2024-3596)](https://www.blastradius.fail/) is a real vulnerability and warrants attention. The attack allows an on-path attacker to modify RADIUS Access-Reject responses into Access-Accepts using an MD5 chosen-prefix collision. It requires a MITM position and forged packet delivery within the round-trip window.
+
+For bare UDP RADIUS over untrusted networks, it is a potential issue (though adding a simple `Reply-Message` attribute with unpredictable content to `Access-Reject` packets can mitigate it).
+
+For this stack, the WireGuard tunnel eliminates the on-path attacker precondition entirely. There is no position from which an attacker can observe or inject RADIUS packets between your NAS and Proxylity. As a defense-in-depth measure this stack includes the `Message-Authenticator` attribute on all responses. A per-packet HMAC-MD5 over the full packet makes response forgery infeasible.
+
+### On RADIUS/TLS (RadSec) as an Alternative
+
+RadSec (RFC 6614) wraps RADIUS in TLS/TCP and addresses transport-security. The tradeoffs compared to RADIUS/UDP over WireGuard are real and worth understanding:
+
+- **Connection overhead**: TLS over TCP introduces a handshake before the first authentication can complete. For long-lived NAS connections this is paid once; for environments with frequent reconnections or many short-lived sessions it accumulates.
+- **Head-of-line blocking**: TCP delivers packets in order. A dropped packet stalls all subsequent RADIUS exchanges on that connection until it is retransmitted, adding latency. UDP-based transports process each packet independently.
+- **Slow start**: TCP congestion control ramps up throughput conservatively after connection establishment. Authentication bursts — common when a power event causes many devices to re-associate simultaneously — can be throttled by TCP slow start at exactly the moment throughput matters most.
+- **Stateful connection management**: RadSec requires maintaining persistent TCP connections from each NAS to each RADIUS server. At scale this is a non-trivial operational surface; NAS firmware support and connection lifecycle handling vary significantly across vendors.
+- **CPU Requirements**: TLS consumes significantly more CPU time than WireGuard. WireGuard's handshake skips certificate parsing and signature verification entirely; the difference is roughly 10x for the handshake alone, which compounds at authentication burst scale.
+
+WireGuard gives the transport-security properties of TLS (mutual authentication, forward secrecy, encryption) without the TCP specific failure modes and cost.
+
 ## Security Best Practices
 
 ### Network Security
-- Restrict ClientCidrToAllow to known networks in global template
+- Restrict `ClientCidrToAllow` to the specific egress IPs of your NAS devices rather than `0.0.0.0/0`
+- Rotate the WireGuard peer key pair and re-register the public key with Proxylity periodically
 - Monitor network access patterns via CloudWatch metrics
 
 ### Data Protection

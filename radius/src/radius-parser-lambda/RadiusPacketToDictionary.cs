@@ -126,7 +126,7 @@ internal static partial class RadiusPacketToDictionary
         return d;
     }
 
-    public static Dictionary<byte, (string name, string type)> ATTRIBUTE_TYPE_DEFINITIONS = new Dictionary<byte, (string name, string type)>
+    public static Dictionary<byte, (string name, string type)> ATTRIBUTE_TYPE_DEFINITIONS = new()
     {
         { 1, ( "User-Name", "text") },
         { 2, ( "User-Password", "string") },
