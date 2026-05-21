@@ -42,6 +42,10 @@
     "AuthStateTableName": {
       "Description": "Explicit name for the RADIUS auth state DynamoDB table. Must be the same value in every deployed region.",
       "Type": "String"
+    },
+    "RadiusSharedSecret": {
+      "Description": "Shared secret for RADIUS authentication (must match the value configured on the RADIUS client)",
+      "Type": "String"
     }
   },
   "Conditions": {
@@ -461,7 +465,9 @@
                 }
               ]
             },
-            "RADIUS_SHARED_SECRET": "not-so-secret"
+            "RADIUS_SHARED_SECRET": { 
+              "Ref": "RadiusSharedSecret"
+            }
           }
         },
         "LoggingConfig": {

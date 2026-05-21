@@ -16,6 +16,10 @@
     "RadiusKmsKeyArn": {
       "Description": "ARN of the KMS key for encryption",
       "Type": "String"
+    },
+    "RadiusSharedSecret": {
+      "Description": "Shared secret for RADIUS authentication (must match the value configured on the RADIUS client)",
+      "Type": "String"
     }
   },
   "Mappings": {
@@ -123,7 +127,9 @@
             "LOG_LEVEL": {
               "Ref": "LambdaLogLevel"
             },
-            "RADIUS_SHARED_SECRET": "not-so-secret"
+            "RADIUS_SHARED_SECRET": { 
+              "Ref": "RadiusSharedSecret"
+          }
           }
         },
         "LoggingConfig": {
@@ -176,7 +182,9 @@
             "LOG_LEVEL": {
               "Ref": "LambdaLogLevel"
             },
-            "RADIUS_SHARED_SECRET": "not-so-secret"
+            "RADIUS_SHARED_SECRET": { 
+              "Ref": "RadiusSharedSecret"
+            }
           }
         },
         "LoggingConfig": {

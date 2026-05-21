@@ -36,6 +36,10 @@
     "DeployedRegions": {
       "Description": "Comma-separated list of regions where this stack is deployed. Used by the API Lambda for cross-region DynamoDB writes.",
       "Type": "String"
+    },
+    "RadiusSharedSecret": {
+      "Description": "Shared secret for RADIUS authentication (must match the value configured on the RADIUS client)",
+      "Type": "String"
     }
   },
   "Resources": {
@@ -158,6 +162,9 @@
               "RadiusKmsKey",
               "Arn"
             ]
+          },
+          "RadiusSharedSecret": {
+            "Ref": "RadiusSharedSecret"
           }
         },
         "Tags": {
@@ -211,6 +218,9 @@
           },
           "AuthStateTableName": {
             "Fn::Sub": "${AWS::StackName}-auth-state"
+          },
+          "RadiusSharedSecret": {
+            "Ref": "RadiusSharedSecret"
           }
         },
         "Tags": {
@@ -246,6 +256,9 @@
               "RadiusSharedStack",
               "Outputs.RadiusParserFunctionArn"
             ]
+          },
+          "RadiusSharedSecret": {
+            "Ref": "RadiusSharedSecret"
           }
         },
         "Tags": {

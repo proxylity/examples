@@ -67,5 +67,6 @@ for DEPLOY_REGION in ${DEPLOY_TO_REGIONS}; do
         --no-fail-on-empty-changeset \
         --region ${DEPLOY_REGION} \
         --parameter-overrides \
+            RadiusSharedSecret="${RADIUS_SHARED_SECRET}" \
             DeployedRegions="$(echo ${DEPLOY_TO_REGIONS} | tr ' ' ',')"
 done
