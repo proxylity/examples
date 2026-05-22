@@ -4,7 +4,6 @@ Route UDP packets from any device directly into a [Supabase](https://supabase.co
 
 A Step Functions Standard Workflow keeps a rotating short-lived JWT in an API Gateway stage variable. A VTL mapping template injects it as the `Authorization` header on every outbound request. The Supabase Edge Function verifies the token and persists each packet to Postgres.
 
-
 ## Architecture
 
 ```mermaid
@@ -39,13 +38,13 @@ flowchart TD
 1. A device sends a UDP datagram to the Proxylity listener endpoint.
 2. Proxylity batches up to `BatchCount` packets and POSTs `{ "Messages": [...] }` to API Gateway.
 3. The VTL request template injects `Authorization: Bearer <SUPABASE_JWT>` (from the stage variable) and passes the body through unchanged.
-4. The Edge Function verifies the JWT, decodes each packet's base64 `Data` field, and batch-inserts all rows into `udp_messages`.
+4. The Supabase Edge Function verifies the JWT, decodes each packet's base64 `Data` field, and batch-inserts all rows into `udp_messages`.
 5. The Edge Function returns `{ "Replies": [...] }`, which Proxylity delivers back to each device as a UDP reply.
 
 **Zero Lambda invocations on the data path.** The JwtSigner Lambda is only called by Step Functions, on a schedule — not per packet.
 
 
-## The JWT Refresh Pattern
+## JWT Refresh Pattern
 
 API Gateway stage variables are a lightweight in-memory store for configuration values that the VTL template can reference per-request. The Step Functions loop exploits this to keep a rotating credential ready without any compute on the hot path:
 
@@ -61,7 +60,7 @@ States:
 This pattern applies to any third-party API that accepts short-lived JWTs: replace the Edge Function URL and the verification logic, and the AWS infrastructure is identical.
 
 
-## The Proxylity Batch Contract
+## Proxylity Batching and JSON Format
 
 All Proxylity destinations that receive batches share the same JSON contract. For API Gateway destinations the body is:
 
@@ -93,7 +92,7 @@ All Proxylity destinations that receive batches share the same JSON contract. Fo
 }
 ```
 
-`Tag` is the correlation key — each Reply is routed back to the sender of the matching Message. Omit a `Tag` from `Replies` to send no response (normal for fire-and-forget sensor data).
+`Tag` is the correlation key. Each Reply is routed back to the sender of the matching Message. Omit a `Tag` from `Replies` to send no response (normal for fire-and-forget sensor data).
 
 `Data` is always base64-encoded. Use `decodeData()` and `encodeReply()` from `supabase/functions/_shared/proxylity.ts` to work with plain text.
 
