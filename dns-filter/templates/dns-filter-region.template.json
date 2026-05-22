@@ -6,7 +6,7 @@
     "DomainName": {
       "Type": "String",
       "Default": "",
-      "Description": "Optional custom domain name for the DNS over HTTPS endpoint. If specified, the DoH service will be available at ${DomainName}/dns-query, otherwise at the default API Gateway endpoint."
+      "Description": "Optional custom domain name for the DNS over HTTPS endpoint. If specified, the DoH service will be available at ${{DomainName}}/dns-query, otherwise at the default API Gateway endpoint."
     },
     "HostedZoneId": {
       "Type": "String",
@@ -449,7 +449,7 @@
         "Handler": "dns-asn-data-lambda::DnsAsnDataLambda.Function::FunctionHandler",
         "MemorySize": 1024,
         "Timeout": 30,
-        "Runtime": "dotnet8",
+        "Runtime": "dotnet10",
         "CodeUri": "../src/dns-asn-data-lambda/",
         "Environment": {
           "Variables": {
@@ -493,7 +493,7 @@
         "FunctionName": "dns-analysis",
         "CodeUri": "../src/dns-analysis-lambda",
         "Handler": "dns-analysis-lambda::DnsAnalysisLambda.Function::FunctionHandler",
-        "Runtime": "dotnet8",
+        "Runtime": "dotnet10",
         "Timeout": 30,
         "MemorySize": 1024,
         "Role": {
@@ -523,7 +523,7 @@
         "Handler": "dns-filter-lambda::DnsFilterLambda.Function::FunctionHandler",
         "MemorySize": 1024,
         "Timeout": 30,
-        "Runtime": "dotnet8",
+        "Runtime": "dotnet10",
         "CodeUri": "../src/dns-filter-lambda",
         "Environment": {
           "Variables": {
@@ -569,7 +569,7 @@
         "FunctionName": "dns-api-adapter",
         "MemorySize": 1024,
         "Timeout": 30,
-        "Runtime": "dotnet8",
+        "Runtime": "dotnet10",
         "CodeUri": "../src/dns-api-adapter-lambda/",
         "Handler": "dns-api-adapter-lambda::DnsApiAdapterLambda.Function::FunctionHandler",
         "Environment": {
