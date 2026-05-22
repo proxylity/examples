@@ -31,35 +31,60 @@
         "RetentionInDays": 7
       }
     },
+    "PacketCounterStateMachineRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "PacketCounterStateMachineLogsPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "PacketCounterStateMachineLogsPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogDelivery",
+                "logs:CreateLogStream",
+                "logs:GetLogDelivery",
+                "logs:UpdateLogDelivery",
+                "logs:DeleteLogDelivery",
+                "logs:ListLogDeliveries",
+                "logs:PutLogEvents",
+                "logs:PutResourcePolicy",
+                "logs:DescribeResourcePolicies",
+                "logs:DescribeLogGroups"
+              ],
+              "Resource": [
+                "*"
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          { "Ref": "PacketCounterStateMachineRole" }
+        ]
+      }
+    },
     "PacketCounterStateMachine": {
       "Type": "AWS::Serverless::StateMachine",
       "Properties": {
         "Type": "EXPRESS",
-        "Policies": [
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Action": [
-                  "logs:CreateLogDelivery",
-                  "logs:CreateLogStream",
-                  "logs:GetLogDelivery",
-                  "logs:UpdateLogDelivery",
-                  "logs:DeleteLogDelivery",
-                  "logs:ListLogDeliveries",
-                  "logs:PutLogEvents",
-                  "logs:PutResourcePolicy",
-                  "logs:DescribeResourcePolicies",
-                  "logs:DescribeLogGroups"
-                ],
-                "Resource": [
-                  "*"
-                ]
-              }
-            ]
-          }
-        ],
+        "Role": { "Fn::GetAtt": [ "PacketCounterStateMachineRole", "Arn" ] },
         "Definition": {
           "StartAt": "Count Packets by Source IP",
           "States": {
@@ -112,32 +137,36 @@
               "Action": "sts:AssumeRole"
             }
           ]
-        },
-        "Policies": [
-          {
-            "PolicyName": "AllowStateMachineExecution",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowStateMachineExecution",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Sfn",
+              "Effect": "Allow",
+              "Action": [
+                "states:DescribeStateMachine",
+                "states:StartSyncExecution"
+              ],
+              "Resource": [
                 {
-                  "Sid": "Sfn",
-                  "Effect": "Allow",
-                  "Action": [
-                    "states:DescribeStateMachine",
-                    "states:StartSyncExecution"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::GetAtt": [
-                        "PacketCounterStateMachine",
-                        "Arn"
-                      ]
-                    }
+                  "Fn::GetAtt": [
+                    "PacketCounterStateMachine",
+                    "Arn"
                   ]
                 }
               ]
             }
-          }
+          ]
+        },
+        "Roles": [
+          { "Ref": "DestinationRole" }
         ]
       }
     },
