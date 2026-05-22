@@ -213,7 +213,7 @@ Resources:
       Role: !GetAtt PacketProcessorRole.Arn
       Environment:
         Variables:
-          APPSYNC_HTTP_URL: !GetAtt PacketCaptureApi.Dns.Http
+          APPSYNC_HTTP_DNSNAME: !GetAtt PacketCaptureApi.Dns.Http
           APPSYNC_API_KEY: !GetAtt PacketCaptureApiKey.ApiKey
           APPSYNC_CHANNEL: /packets/capture
       Events:

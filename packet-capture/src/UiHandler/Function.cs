@@ -46,7 +46,7 @@ public class Function
         };
     }
 
-    // $$""" means {{ and }} are literal { and } — only {{configJson}} is an interpolation site.
+    // $$""" means { and } are literal — only {{configJson}} is an interpolation site.
     private static string BuildHtml(string configJson) => $$"""
         <!DOCTYPE html>
         <html lang="en">
@@ -54,6 +54,7 @@ public class Function
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
           <title>Packet Capture</title>
+          <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
           <style>
             *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -215,12 +216,84 @@ public class Function
             }
 
             .note { font-size: 0.65rem; color: #8b949e; font-weight: 400; margin-left: 4px; }
+
+            /* ── QR button ── */
+            #qr-btn {
+              background: none;
+              border: 1px solid #30363d;
+              color: #8b949e;
+              border-radius: 4px;
+              padding: 0.2rem 0.5rem;
+              cursor: pointer;
+              font-size: 0.8rem;
+              line-height: 1;
+            }
+            #qr-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+
+            /* ── QR modal ── */
+            #qr-overlay {
+              display: none;
+              position: fixed; inset: 0;
+              background: rgba(0,0,0,0.65);
+              z-index: 100;
+              align-items: center;
+              justify-content: center;
+            }
+            #qr-overlay.open { display: flex; }
+            #qr-box {
+              background: #161b22;
+              border: 1px solid #30363d;
+              border-radius: 8px;
+              padding: 1.5rem;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 1rem;
+              max-width: 320px;
+              width: 90%;
+            }
+            #qr-box h2 { font-size: 0.85rem; color: #c9d1d9; font-weight: 600; }
+            #qr-img-wrap { background: #fff; padding: 8px; border-radius: 4px; line-height: 0; }
+            #qr-url {
+              font-size: 0.62rem;
+              color: #8b949e;
+              word-break: break-all;
+              text-align: center;
+              max-width: 260px;
+            }
+            #qr-actions { display: flex; gap: 0.5rem; }
+            #qr-copy, #qr-close {
+              border: 1px solid #30363d;
+              background: none;
+              border-radius: 4px;
+              padding: 0.3rem 0.8rem;
+              cursor: pointer;
+              font-size: 0.75rem;
+              font-family: inherit;
+            }
+            #qr-copy  { color: #58a6ff; border-color: #58a6ff; }
+            #qr-close { color: #8b949e; }
+            #qr-copy:hover  { background: #1c2d3f; }
+            #qr-close:hover { background: #21262d; }
           </style>
         </head>
         <body>
           <div id="hdr">
             <h1>&#x1F4E1; Live Packet Capture</h1>
             <span id="status">Connecting…</span>
+            <button id="qr-btn" title="Share link via QR code">&#x1F4F7; QR</button>
+          </div>
+
+          <div id="qr-overlay">
+            <div id="qr-box">
+              <h2>Share this capture</h2>
+              <div id="qr-img-wrap"></div>
+              <span id="qr-url"></span>
+              <div id="qr-actions">
+                <button id="qr-copy">Copy link</button>
+                <button id="qr-close">Close</button>
+              </div>
+            </div>
           </div>
 
           <div id="list-pane">
@@ -444,6 +517,38 @@ public class Function
               container.appendChild(row);
             }
 
+            // ── QR code modal ──────────────────────────────────────────────────
+            (function () {
+              const overlay = document.getElementById('qr-overlay');
+              const imgWrap = document.getElementById('qr-img-wrap');
+              const urlEl   = document.getElementById('qr-url');
+              const copyBtn = document.getElementById('qr-copy');
+              const closeBtn = document.getElementById('qr-close');
+
+              document.getElementById('qr-btn').addEventListener('click', () => {
+                const url = window.location.href;
+                urlEl.textContent = url;
+                imgWrap.innerHTML = '';
+                const qr = qrcode(0, 'M');
+                qr.addData(url);
+                qr.make();
+                imgWrap.innerHTML = qr.createImgTag(4, 0);
+                overlay.classList.add('open');
+              });
+
+              copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(window.location.href).then(() => {
+                  copyBtn.textContent = 'Copied!';
+                  setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 2000);
+                });
+              });
+
+              closeBtn.addEventListener('click', () => overlay.classList.remove('open'));
+              overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.classList.remove('open');
+              });
+            })();
+
             function esc(s) {
               return String(s)
                 .replace(/&/g, '&amp;')
@@ -474,7 +579,7 @@ public class UiConfig
     public string Channel { get; set; } = string.Empty;
 }
 
-[JsonSerializable(typeof(APIGatewayProxyRequest))]
-[JsonSerializable(typeof(APIGatewayProxyResponse))]
 [JsonSerializable(typeof(UiConfig))]
+[JsonSerializable(typeof(Amazon.Lambda.APIGatewayEvents.APIGatewayProxyRequest))]
+[JsonSerializable(typeof(Amazon.Lambda.APIGatewayEvents.APIGatewayProxyResponse))]
 internal partial class JsonContext : JsonSerializerContext;

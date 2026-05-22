@@ -1,10 +1,10 @@
+using Amazon.Lambda.Core;
+using Amazon.Lambda.Serialization.SystemTextJson;
+using Amazon.Lambda.SQSEvents;
+using PacketDotNet;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Amazon.Lambda.Core;
-using Amazon.Lambda.SQSEvents;
-using Amazon.Lambda.Serialization.SystemTextJson;
-using PacketDotNet;
 
 [assembly: LambdaSerializer(typeof(SourceGeneratorLambdaJsonSerializer<PacketProcessor.JsonContext>))]
 
@@ -12,17 +12,19 @@ namespace PacketProcessor;
 
 public class Function
 {
-    private static readonly string AppsyncHttpUrl =
-        Environment.GetEnvironmentVariable("APPSYNC_HTTP_URL")
-        ?? throw new InvalidOperationException("APPSYNC_HTTP_URL environment variable is not set.");
+    private static readonly string APPSYNC_HTTP_DNSNAME =
+        Environment.GetEnvironmentVariable(nameof(APPSYNC_HTTP_DNSNAME))
+        ?? throw new InvalidOperationException($"{nameof(APPSYNC_HTTP_DNSNAME)} environment variable is not set.");
+    
+    private static readonly string APPSYNC_HTTP_URL = $"https://{APPSYNC_HTTP_DNSNAME}/event";
 
-    private static readonly string AppsyncApiKey =
-        Environment.GetEnvironmentVariable("APPSYNC_API_KEY")
-        ?? throw new InvalidOperationException("APPSYNC_API_KEY environment variable is not set.");
+    private static readonly string APPSYNC_API_KEY =
+        Environment.GetEnvironmentVariable(nameof(APPSYNC_API_KEY))
+        ?? throw new InvalidOperationException($"{nameof(APPSYNC_API_KEY)} environment variable is not set.");
 
-    private static readonly string AppsyncChannel =
-        Environment.GetEnvironmentVariable("APPSYNC_CHANNEL")
-        ?? throw new InvalidOperationException("APPSYNC_CHANNEL environment variable is not set.");
+    private static readonly string APPSYNC_CHANNEL =
+        Environment.GetEnvironmentVariable(nameof(APPSYNC_CHANNEL))
+        ?? throw new InvalidOperationException($"{nameof(APPSYNC_CHANNEL)} environment variable is not set.");
 
     private static readonly HttpClient Http = new();
 
@@ -66,23 +68,20 @@ public class Function
 
     private static async Task PublishEventsAsync(PacketEvent[] events, ILambdaContext context)
     {
-        // AppSync Events HTTP publish endpoint: POST https://{dns}/event
-        var url = $"https://{AppsyncHttpUrl}/event";
-
         // Each element of the "events" array is published as an individual channel event.
         var body = new PublishBody
         {
-            Channel = AppsyncChannel,
-            Events = events.Select(e => JsonSerializer.Serialize(e, JsonContext.Default.PacketEvent)).ToArray()
+            Channel = APPSYNC_CHANNEL,
+            Events = [.. events.Select(e => JsonSerializer.Serialize(e, JsonContext.Default.PacketEvent))]
         };
 
         var json = JsonSerializer.Serialize(body, JsonContext.Default.PublishBody);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        using var request = new HttpRequestMessage(HttpMethod.Post, APPSYNC_HTTP_URL)
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
-        request.Headers.Add("x-api-key", AppsyncApiKey);
+        request.Headers.Add("x-api-key", APPSYNC_API_KEY);
 
         var response = await Http.SendAsync(request);
         if (!response.IsSuccessStatusCode)
