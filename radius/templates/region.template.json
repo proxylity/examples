@@ -40,6 +40,16 @@
     "RadiusSharedSecret": {
       "Description": "Shared secret for RADIUS authentication (must match the value configured on the RADIUS client)",
       "Type": "String"
+    },
+    "AnomalyBlockThreshold": {
+      "Description": "Number of anomaly detections for an entity before it is blocked from authenticating",
+      "Type": "Number",
+      "Default": 5
+    },
+    "AnomalyAlertThreshold": {
+      "Description": "Number of anomaly detections for an entity before an EventBridge alert is raised",
+      "Type": "Number",
+      "Default": 2
     }
   },
   "Resources": {
@@ -221,6 +231,12 @@
           },
           "RadiusSharedSecret": {
             "Ref": "RadiusSharedSecret"
+          },
+          "AnomalyBlockThreshold": {
+            "Ref": "AnomalyBlockThreshold"
+          },
+          "AnomalyAlertThreshold": {
+            "Ref": "AnomalyAlertThreshold"
           }
         },
         "Tags": {

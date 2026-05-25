@@ -27,6 +27,25 @@
                 }
             ],
             "Output": "{% $merge([$states.input, { 'Messages': [$map($states.input.Messages, function($s, $i) { $merge([$s, { 'Data': $states.result.Payload.parsed_packets[$i] }]) })] }]) %}",
+            "Next": "Load Shared NAS and IP Records"
+        },
+        "Load Shared NAS and IP Records": {
+            "Comment": "Batch-load NAS configs and IP/NAS anomaly records for all unique identifiers in the batch before per-packet processing starts.",
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:batchGetItem",
+            "Arguments": {
+                "RequestItems": {
+                    "${RADIUS_AUTH_STATE_TABLE}": {
+                        "Keys": "{% ( $nas_ids := $distinct($states.input.Messages.Data.attributes.'NAS-Identifier'[$exists($) and $ != '']); $ips := $distinct($states.input.Messages.Remote.IpAddress[$exists($) and $ != '']); $append($append($map($nas_ids, function($nas) { {'PK': {'S': 'NAS#' & $nas}, 'SK': {'S': '#CONFIG'}} }), $map($ips, function($ip) { {'PK': {'S': 'ANOMALY#ip#' & $ip}, 'SK': {'S': '#CURRENT'}} })), $map($nas_ids, function($nas) { {'PK': {'S': 'ANOMALY#nas#' & $nas}, 'SK': {'S': '#CURRENT'}} })) ) %}"
+                    }
+                }
+            },
+            "Assign": {
+                "nas_map": "{% ( $items := $lookup($states.result.Responses, '${RADIUS_AUTH_STATE_TABLE}'); $matched := $items[$substring(PK.S, 0, 4) = 'NAS#']; $exists($matched) ? $merge($map($matched, function($i) { {$substring($i.PK.S, 4): $i} })) : {} ) %}",
+                "ip_anomaly_map": "{% ( $items := $lookup($states.result.Responses, '${RADIUS_AUTH_STATE_TABLE}'); $matched := $items[$substring(PK.S, 0, 11) = 'ANOMALY#ip#']; $exists($matched) ? $merge($map($matched, function($i) { {$substring($i.PK.S, 11): $exists($i.anomaly_count.N) ? $number($i.anomaly_count.N) : 0} })) : {} ) %}",
+                "nas_anomaly_map": "{% ( $items := $lookup($states.result.Responses, '${RADIUS_AUTH_STATE_TABLE}'); $matched := $items[$substring(PK.S, 0, 12) = 'ANOMALY#nas#']; $exists($matched) ? $merge($map($matched, function($i) { {$substring($i.PK.S, 12): $exists($i.anomaly_count.N) ? $number($i.anomaly_count.N) : 0} })) : {} ) %}"
+            },
+            "Output": "{% $states.input %}",
             "Next": "Process Packets Concurrently"
         },
         "Process Packets Concurrently": {
@@ -56,9 +75,12 @@
                             "called_station_id": "{% $exists($states.input.Data.attributes.'Called-Station-Id') ? $states.input.Data.attributes.'Called-Station-Id' : '' %}",
                             "nas_identifier": "{% $exists($states.input.Data.attributes.'NAS-Identifier') ? $states.input.Data.attributes.'NAS-Identifier' : '' %}",
                             "connect_info": "{% $exists($states.input.Data.attributes.'Connect-Info') ? $states.input.Data.attributes.'Connect-Info' : '' %}",
-                            "session_id": "{% $exists($states.input.Data.attributes.'Acct-Session-Id') ? $states.input.Data.attributes.'Acct-Session-Id' : $replace($uuid(),'-','') %}"
+                            "session_id": "{% $exists($states.input.Data.attributes.'Acct-Session-Id') ? $states.input.Data.attributes.'Acct-Session-Id' : $replace($uuid(),'-','') %}",
+                            "reply_message": "",
+                            "ip_anomaly_count": "{% $exists($lookup($ip_anomaly_map, $states.input.Remote.IpAddress)) ? $lookup($ip_anomaly_map, $states.input.Remote.IpAddress) : 0 %}",
+                            "nas_anomaly_count": "{% ( $nas := $exists($states.input.Data.attributes.'NAS-Identifier') ? $states.input.Data.attributes.'NAS-Identifier' : ''; $exists($lookup($nas_anomaly_map, $nas)) ? $lookup($nas_anomaly_map, $nas) : 0 ) %}"
                         },
-                        "Next": "Is this MAC, PAP or CHAP?"
+                        "Next": "Is IP or NAS Blocked?"
                     },
                     "Is this MAC, PAP or CHAP?": {
                         "Type": "Choice",
@@ -98,9 +120,22 @@
                         "Default": "Reject",
                         "Output": "Unsupported authentication type."
                     },
+                    "Is IP or NAS Blocked?": {
+                        "Comment": "Fast pre-DDB block check using pre-loaded map variables — no I/O required.",
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "IP or NAS anomaly count exceeds block threshold — silently ignore, skipping DDB reads",
+                                "Condition": "{% $ip_anomaly_count >= ${ANOMALY_BLOCK_THRESHOLD} or $nas_anomaly_count >= ${ANOMALY_BLOCK_THRESHOLD} %}",
+                                "Next": "Ignore"
+                            }
+                        ],
+                        "Default": "Is this MAC, PAP or CHAP?"
+                    },
                     "Get Necessary Records": {
+                        "Comment": "Fetch per-packet records not covered by the batch pre-load: the user config and CS anomaly. NAS config and IP/NAS anomaly counts are resolved from the pre-loaded map variables.",
                         "Type": "Parallel",
-                        "Next": "Does the NAS Override Password Checks?",
+                        "Next": "Is Entity Blocked?",
                         "Branches": [
                             {
                                 "StartAt": "Get User Record",
@@ -125,40 +160,85 @@
                                 }
                             },
                             {
-                                "StartAt": "Get NAS Record",
+                                "StartAt": "Get CS Anomaly",
                                 "States": {
-                                    "Get NAS Record": {
+                                    "Get CS Anomaly": {
                                         "Type": "Task",
                                         "Resource": "arn:aws:states:::dynamodb:getItem",
                                         "Arguments": {
                                             "TableName": "${RADIUS_AUTH_STATE_TABLE}",
                                             "Key": {
                                                 "PK": {
-                                                    "S": "{% 'NAS#' & $nas_identifier %}"
+                                                    "S": "{% 'ANOMALY#calling_station#' & $lowercase($replace($calling_station_id, /-|:|\\s/, '')) %}"
                                                 },
                                                 "SK": {
-                                                    "S": "#CONFIG"
+                                                    "S": "#CURRENT"
                                                 }
                                             }
                                         },
-                                        "Output": "{% $exists($states.result.Item) ? $states.result.Item : null %}",
+                                        "Output": "{% $exists($states.result.Item.anomaly_count.N) ? $number($states.result.Item.anomaly_count.N) : 0 %}",
                                         "End": true
                                     }
                                 }
                             }
                         ],
-                        "Output": "{% $merge([$states.input, {\n  \"user\": $states.result[0],\n  \"nas\": $states.result[1]\n}]) %}"
+                        "Assign": {
+                            "cs_anomaly_count": "{% $states.result[1] %}"
+                        },
+                        "Output": "{% $merge([$states.input, {\n  \"user\": $states.result[0],\n  \"nas\": $lookup($nas_map, $nas_identifier)\n}]) %}"
+                    },
+                    "Is Entity Blocked?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "CS anomaly count exceeds block threshold — silently ignore (IP and NAS already checked before DDB reads)",
+                                "Condition": "{% $cs_anomaly_count >= ${ANOMALY_BLOCK_THRESHOLD} %}",
+                                "Next": "Ignore"
+                            }
+                        ],
+                        "Default": "Is Entity Flagged?"
+                    },
+                    "Is Entity Flagged?": {
+                        "Type": "Choice",
+                        "Choices": [
+                            {
+                                "Comment": "Anomaly count exceeds alert threshold — fire EventBridge event and continue",
+                                "Condition": "{% $ip_anomaly_count >= ${ANOMALY_ALERT_THRESHOLD} or $cs_anomaly_count >= ${ANOMALY_ALERT_THRESHOLD} or $nas_anomaly_count >= ${ANOMALY_ALERT_THRESHOLD} %}",
+                                "Next": "Send Flagged Login Alert"
+                            }
+                        ],
+                        "Default": "Does the NAS Override Password Checks?"
+                    },
+                    "Send Flagged Login Alert": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::events:putEvents",
+                        "Arguments": {
+                            "Entries": [
+                                {
+                                    "Source": "radius.anomaly",
+                                    "DetailType": "RADIUS Authentication Anomaly",
+                                    "Detail": "{% $string({'remote_ip': $remote_ip, 'calling_station_id': $calling_station_id, 'nas_identifier': $nas_identifier, 'ip_anomaly_count': $ip_anomaly_count, 'cs_anomaly_count': $cs_anomaly_count, 'nas_anomaly_count': $nas_anomaly_count}) %}"
+                                }
+                            ]
+                        },
+                        "Assign": {
+                            "reply_message": "Authentication anomaly detected"
+                        },
+                        "Next": "Does the NAS Override Password Checks?"
                     },
                     "Does the NAS Override Password Checks?": {
                         "Type": "Choice",
                         "Choices": [
                             {
                                 "Condition": "{% $exists($states.input.nas.auto_allow_users.SS) and $reduce($states.input.nas.auto_allow_users.SS, function($accum, $pattern) { $accum or ($pattern = '*' or $pattern = $user_name) }, false) %}",
-                                "Next": "Generate Session Info",
+                                "Next": "Assign VLAN",
                                 "Comment": "NAS Auto-Accept Rule Match (User-Password ignored)"
                             }
                         ],
-                        "Default": "Does the Password Match?"
+                        "Default": "Does the Password Match?",
+                        "Assign": {
+                            "session_duration": "{% $exists($states.input.nas.session_duration.N) ? $number($states.input.nas.session_duration.N) : 3600 %}"
+                        }
                     },
                     "Does the Password Match?": {
                         "Type": "Choice",
@@ -171,7 +251,7 @@
                             {
                                 "Comment": "MAC Auth Match",
                                 "Condition": "{% $auth_type = 'mac' and $exists($states.input.user.user_password.S) and $states.input.user.user_password.S = $user_password %}",
-                                "Next": "Generate Session Info"
+                                "Next": "Assign VLAN"
                             },
                             {
                                 "Comment": "Check CHAP Hash",
@@ -202,18 +282,17 @@
                                     "S": "{% $states.context.State.EnteredTime %}"
                                 },
                                 "TTL": {
-                                    "N": "{% '' & ($millis()/1000 + (24 * 60 * 60)) %}"
+                                    "N": "{% '' & ($millis()/1000 + $session_duration) %}"
                                 }
                             }
                         },
                         "Output": "{% $states.input %}",
-                        "Next": "Generate Session Info"
+                        "Next": "Assign VLAN"
                     },
-                    "Generate Session Info": {
+                    "Assign VLAN": {
                         "Type": "Pass",
                         "Next": "Make Note of the Anticipated Session",
                         "Assign": {
-                            "session_duration": "{% $exists($states.input.nas.session_duration.N) ? $number($states.input.nas.session_duration.N) : 3600 %}",
                             "vlan": "{% $exists($states.input.user.vlan.S) ? $states.input.user.vlan.S : ($exists($states.input.nas.vlan.S) ? $states.input.nas.vlan.S : '') %}"
                         }
                     },
@@ -314,7 +393,7 @@
                                 "Next": "Remember the MAC"
                             }
                         ],
-                        "Default": "Generate Session Info"
+                        "Default": "Assign VLAN"
                     },
                     "Reject": {
                         "Type": "Pass",
@@ -322,16 +401,21 @@
                         "Output": {
                             "code": 3,
                             "attributes": {
-                                "Reply-Message": "{% $states.input & ' ' & $states.context.State.EnteredTime %}"
+                                "Reply-Message": "{% ($reply_message != '' ? $reply_message & ': ' : '') & $states.input %}"
                             }
                         },
                         "Next": "Add Request Properties to Output"
                     },
                     "Accept": {
-                        "Output": "{% (\n  $classes:= $exists($states.input.user.groups.SS) ? $states.input.user.groups.SS : [];\n  $basic_attrs := {\n    'User-Name': $user_name,\n    'Acct-Session-Id': $session_id,\n    'Session-Timeout': $string($session_duration),\n    'Class': $join($classes, '␞')\n  };\n  $vlan_attrs := $length($vlan) > 0 ? {\n    'Tunnel-Type': \"13\",\n    'Tunnel-Medium-Type': \"6\",\n    'Tunnel-Private-Group-ID': $vlan\n  } : {};\n  \n  {\n    'code': 2,\n    'attributes': $merge([$basic_attrs, $vlan_attrs])\n  }\n) %}",
+                        "Output": "{% (\n  $classes:= $exists($states.input.user.groups.SS) ? $states.input.user.groups.SS : [];\n  $basic_attrs := {\n    'User-Name': $user_name,\n    'Acct-Session-Id': $session_id,\n    'Session-Timeout': $string($session_duration),\n    'Class': $join($classes, '␞')\n  };\n  $vlan_attrs := $length($vlan) > 0 ? {\n    'Tunnel-Type': \"13\",\n    'Tunnel-Medium-Type': \"6\",\n    'Tunnel-Private-Group-ID': $vlan\n  } : {};\n  $reply_attrs := { 'Reply-Message': $reply_message != '' ? $reply_message : 'Authentication accepted' };\n  \n  {\n    'code': 2,\n    'attributes': $merge([$basic_attrs, $vlan_attrs, $reply_attrs])\n  }\n) %}",
                         "QueryLanguage": "JSONata",
                         "Type": "Pass",
                         "Next": "Add Request Properties to Output"
+                    },
+                    "Ignore": {
+                        "Type": "Pass",
+                        "Output": null,
+                        "End": true
                     },
                     "Add Request Properties to Output": {
                         "Type": "Pass",
@@ -341,6 +425,7 @@
                 }
             },
             "Items": "{% $exists($states.input.Messages) ? $states.input.Messages : [] %}",
+            "Output": "{% $filter($states.result, function($v) { $v != null }) %}",
             "Next": "Write Radius Response Packets"
         },
         "Write Radius Response Packets": {
@@ -349,7 +434,7 @@
             "Arguments": {
                 "FunctionName": "${RADIUS_AUTH_WRITER_FUNCTION}",
                 "Payload": {
-                    "packets_to_write": "{% $states.input %}"
+                    "packets_to_write": "{% [$states.input] %}"
                 }
             },
             "Retry": [

@@ -12,7 +12,7 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
     static readonly string AWS_REGION = Environment.GetEnvironmentVariable(nameof(AWS_REGION)) ?? throw new ArgumentException($"{nameof(AWS_REGION)} environment variable is required");
     static readonly string BEDROCK_MODEL_ID = Environment.GetEnvironmentVariable(nameof(BEDROCK_MODEL_ID)) ?? throw new ArgumentException($"{nameof(BEDROCK_MODEL_ID)} environment variable is required");
 
-    const string SYSTEM_PROMPT = "You are a RADIUS security expert. Given a summary of requests identify concerns. Answer concisely with only \"OK\" if no concerns are detected, otherwise identify the suspicious IP or calling station ID value. If more than one value is concerning, separate them on new lines.";
+    const string SYSTEM_PROMPT = "You are a RADIUS security expert. Analyze the provided summary of RADIUS authentication requests and identify security concerns such as unusual request volumes, repeated failures, unexpected NAS identifiers, or suspicious IP and MAC patterns. Use the report_anomalies tool to report your findings — report an empty list if no concerns are detected.";
     const string USER_PROMPT = "remote_ip,called_station,calling_station,packet_code,count\n";
 
     public Function() : this(new Amazon.S3.AmazonS3Client(), new Amazon.BedrockRuntime.AmazonBedrockRuntimeClient(), new Amazon.DynamoDBv2.AmazonDynamoDBClient()) { }
@@ -46,7 +46,7 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
 
             var (code, length, id, authenticator, attributes) = RadiusAcctLambda.RadiusPacketReader.Parse(data);
             var calling = attributes.FirstOrDefault(a => a.type == 31).value;
-            var calling_hex = calling.IsEmpty ? "-" : BitConverter.ToString(calling.ToArray()).Replace("-", "");
+            var calling_hex = calling.IsEmpty ? "-" : BitConverter.ToString(calling.ToArray()).Replace("-", "").ToLowerInvariant();
 
             var called = attributes.FirstOrDefault(a => a.type == 30).value;
             var called_hex = called.IsEmpty ? "-" : BitConverter.ToString(called.ToArray()).Replace("-", "");
@@ -60,7 +60,7 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
         }
 
         // 3. start call to bedrock inference endpoint (use nova light) prompt
-        var prompt = USER_PROMPT + string.Join('\n', bedrock_input.Select(kv => $"{kv.Key},{kv.Value}")) + "\n\nAnswer: ";
+        var prompt = USER_PROMPT + string.Join('\n', bedrock_input.Select(kv => $"{kv.Key},{kv.Value}"));
         context.Logger.LogLine($"Calling bedrock with prompt ({prompt.Length} characters):\n{prompt}");
 
         var bedrock_task = bedrock.ConverseAsync(new Amazon.BedrockRuntime.Model.ConverseRequest
@@ -76,6 +76,51 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
             {
                 MaxTokens = 512,
                 Temperature = 0.1f
+            },
+            ToolConfig = new Amazon.BedrockRuntime.Model.ToolConfiguration
+            {
+                Tools =
+                [
+                    new()
+                    {
+                        ToolSpec = new()
+                        {
+                            Name = "report_anomalies",
+                            Description = "Report security anomalies detected in RADIUS authentication traffic",
+                            InputSchema = new()
+                            {
+                                Json = new Amazon.Runtime.Documents.Document(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                {
+                                    ["type"] = new("object"),
+                                    ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                    {
+                                        ["anomalies"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                        {
+                                            ["type"] = new("array"),
+                                            ["items"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                            {
+                                                ["type"] = new("object"),
+                                                ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                                {
+                                                    ["entity_type"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                                    {
+                                                        ["type"] = new("string"),
+                                                        ["enum"] = new(new List<Amazon.Runtime.Documents.Document> { new("ip"), new("calling_station"), new("nas") })
+                                                    }),
+                                                    ["value"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") }),
+                                                    ["reason"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") })
+                                                }),
+                                                ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("entity_type"), new("value"), new("reason") })
+                                            })
+                                        })
+                                    }),
+                                    ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("anomalies") })
+                                })
+                            }
+                        }
+                    }
+                ],
+                ToolChoice = new() { Any = new() }
             }
         });
 
@@ -115,20 +160,45 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
                 [":now"] = new() { S = now.ToString("o") }
             }
         });
-        var update_batches = ip_updates.Concat(cs_updates).Chunk(25); // DDB batch write limit is 25 items
-        var ddb_tasks = update_batches.Select(batch => ddb.TransactWriteItemsAsync(new Amazon.DynamoDBv2.Model.TransactWriteItemsRequest
+        // 5. Await bedrock results, then build anomaly updates and execute all DDB writes together.
+        var bedrock_response = await bedrock_task;
+        var tool_use = bedrock_response.Output?.Message?.Content?.Select(c => c.ToolUse).FirstOrDefault(t => t?.Name == "report_anomalies");
+        var anomalies = tool_use?.Input.AsDictionary()["anomalies"].AsList()
+            .Select(a => { var d = a.AsDictionary(); return (entity_type: d["entity_type"].AsString(), value: d["value"].AsString(), reason: d["reason"].AsString()); })
+            ?? [];
+
+        IEnumerable<Amazon.DynamoDBv2.Model.Update> anomaly_updates = [];
+        if (anomalies.Any())
+        {
+            foreach (var (entity_type, value, reason) in anomalies)
+                context.Logger.LogLine($"Anomaly detected: entity_type={entity_type}, value={value}, reason={reason}");
+
+            var anomaly_ttl = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + (8 * 60 * 60); // 8-hour TTL, resets on each detection
+            anomaly_updates = anomalies.Select(a => new Amazon.DynamoDBv2.Model.Update
+            {
+                TableName = RADIUS_AUTH_STATE_TABLE,
+                Key = new Dictionary<string, Amazon.DynamoDBv2.Model.AttributeValue>
+                {
+                    ["PK"] = new() { S = $"ANOMALY#{a.entity_type}#{a.value}" },
+                    ["SK"] = new() { S = "#CURRENT" }
+                },
+                UpdateExpression = "SET reason = :reason, last_detected = :now, first_detected = if_not_exists(first_detected, :now), #ttl = :ttl ADD anomaly_count :one",
+                ExpressionAttributeNames = new Dictionary<string, string> { ["#ttl"] = "TTL" },
+                ExpressionAttributeValues = new Dictionary<string, Amazon.DynamoDBv2.Model.AttributeValue>
+                {
+                    [":reason"] = new() { S = a.reason },
+                    [":now"] = new() { S = now.ToString("o") },
+                    [":ttl"] = new() { N = anomaly_ttl.ToString() },
+                    [":one"] = new() { N = "1" }
+                }
+            }).ToList();
+        }
+        else context.Logger.LogLine("No anomalies detected by bedrock.");
+
+        await Task.WhenAll(ip_updates.Concat(cs_updates).Concat(anomaly_updates).Chunk(25).Select(batch => ddb.TransactWriteItemsAsync(new Amazon.DynamoDBv2.Model.TransactWriteItemsRequest
         {
             TransactItems = [.. batch.Select(u => new Amazon.DynamoDBv2.Model.TransactWriteItem { Update = u })]
-        }));
-
-        // 5. When bedrock results are available, update DDB with any detected anomalies.
-        var bedrock_response = await bedrock_task;
-        var anomalies = bedrock_response.Output?.Message?.Content?.Select(c => c.Text).Where(t => !string.IsNullOrWhiteSpace(t) && t != "OK") ?? [];
-
-        context.Logger.LogLine($"Bedrock response: {string.Join("\n", anomalies)}");
-        // TODO: parse anomalies and write to DDB table
-        
-        await Task.WhenAll(ddb_tasks);
+        })));
 
         return await Task.FromResult(new AggregationResponse());
     }

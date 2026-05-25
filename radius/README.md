@@ -20,7 +20,7 @@ Note: this implementation does not support EAP (PEAP, EAP-TLS, etc.), so it is *
 
 **Accounting**: Receives Accounting-Request packets (Start, Stop, Interim-Update), acknowledges them, and archives the full session history to S3 organized by session ID.
 
-**Anomaly detection**: Auth traffic is periodically analyzed by Bedrock (Nova Lite) to surface unusual authentication patterns — repeated failures from new MACs, unexpected NAS identifiers, or geographic anomalies.
+**Anomaly detection**: Auth traffic is periodically analyzed by Bedrock (Nova Lite) to surface unusual authentication patterns — repeated failures from new MACs, unexpected NAS identifiers, or geographic anomalies. Anomaly counts are tracked per calling station, NAS, and source IP in DynamoDB. Once an entity's count reaches the alert threshold an EventBridge event is raised; once it reaches the block threshold, all packets from that entity are silently dropped without any response.
 
 ## Deployment
 
@@ -173,6 +173,8 @@ Guests enter credentials on the captive portal page; UniFi sends them to RADIUS 
 | `RadiusLogRetentionDays` | `89` | CloudWatch log retention |
 | `AuthStateTableReadCapacity` | `0` | DynamoDB read capacity (0 = on-demand) |
 | `AuthStateTableWriteCapacity` | `0` | DynamoDB write capacity (0 = on-demand) |
+| `AnomalyAlertThreshold` | `2` | Anomaly detections for an entity before an EventBridge alert is raised |
+| `AnomalyBlockThreshold` | `5` | Anomaly detections for an entity before it is silently blocked |
 | `LambdaLogLevel` | `INFO` | Lambda log verbosity |
 
 ## How It's Put Together
@@ -186,7 +188,7 @@ The stack is split into a global CloudFormation template (deployed once) and reg
 - `region-auth.template.json` — Auth Lambda, Step Functions state machine, DynamoDB table, Firehose → S3, Bedrock aggregation Lambda
 - `region-acct.template.json` — Accounting Lambda, Firehose → S3, distributed Step Functions processing for session archiving
 
-**Authentication flow**: The auth Lambda receives a batch of up to 50 packets from Proxylity, invokes a Step Functions Express Workflow per packet (synchronously), and returns the response batch. The state machine handles all the logic: parsing the packet, querying DynamoDB for the user and NAS record in parallel, checking credentials (PAP/CHAP/MAC), storing the anticipated session, and calling the writer Lambda to construct the binary response.
+**Authentication flow**: Proxylity batches up to 50 auth packets and invokes the Step Functions Express Workflow directly (synchronously) for each batch. The state machine first parses all packets via the parser Lambda, then batch-loads NAS configurations and IP/NAS anomaly records from DynamoDB in a single request, then processes all packets concurrently in an INLINE Map state. Each packet is checked against pre-loaded block status before any per-packet DynamoDB reads, validated for format (MAC/PAP/CHAP), looked up against the user and NAS records, and routed to an Accept or Reject outcome. The writer Lambda constructs and returns the binary response batch.
 
 **Accounting flow**: The accounting Lambda processes packets directly without Step Functions — it validates the request, constructs the Accounting-Response, and returns it. A separate Firehose destination archives all packets; an EventBridge rule triggers a distributed Step Functions map execution to parse and organize them into S3 by session ID.
 

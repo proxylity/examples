@@ -46,6 +46,16 @@
     "RadiusSharedSecret": {
       "Description": "Shared secret for RADIUS authentication (must match the value configured on the RADIUS client)",
       "Type": "String"
+    },
+    "AnomalyBlockThreshold": {
+      "Description": "Number of anomaly detections for an entity before it is blocked from authenticating",
+      "Type": "Number",
+      "Default": 5
+    },
+    "AnomalyAlertThreshold": {
+      "Description": "Number of anomaly detections for an entity before an EventBridge alert is raised",
+      "Type": "Number",
+      "Default": 2
     }
   },
   "Conditions": {
@@ -998,6 +1008,12 @@
           },
           "CALCULATE_CHAP_HASH_FUNCTION": {
             "Ref": "CalculateChapHashFunction"
+          },
+          "ANOMALY_BLOCK_THRESHOLD": {
+            "Ref": "AnomalyBlockThreshold"
+          },
+          "ANOMALY_ALERT_THRESHOLD": {
+            "Ref": "AnomalyAlertThreshold"
           }
         },
         "DefinitionUri": "./state-machines/radius-auth.asl.json"
@@ -1073,9 +1089,16 @@
               ]
             },
             {
+              "Sid": "AllowEventBridgePutEvents",
+              "Effect": "Allow",
+              "Action": ["events:PutEvents"],
+              "Resource": "*"
+            },
+            {
               "Effect": "Allow",
               "Action": [
                 "dynamodb:GetItem",
+                "dynamodb:BatchGetItem",
                 "dynamodb:Query",
                 "dynamodb:PutItem"
               ],
