@@ -1,7 +1,6 @@
 namespace DnsFilterLambda;
 
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 
 public static class DnsQueryAnalyzer
 {
@@ -17,6 +16,10 @@ public static class DnsQueryAnalyzer
         var entropies = subdomains.Select(subdomain => ComputeEntropy(subdomain)).ToList();
         state.MaxEntropy = Math.Max(state.MaxEntropy, entropies.Max());
         state.AvgEntropy = (state.AvgEntropy * (state.TotalQueries - subdomains.Count) + entropies.Sum()) / state.TotalQueries;
+
+        var relativeEntropies = subdomains.Select(subdomain => RelativeEntropy.CalculateKLDivergence(subdomain)).ToList();
+        state.MaxRelativeEntropy = Math.Max(state.MaxRelativeEntropy, relativeEntropies.Max());
+        state.AvgRelativeEntropy = (state.AvgRelativeEntropy * (state.TotalQueries - subdomains.Count) + relativeEntropies.Sum()) / state.TotalQueries;
 
         state.NxDomainCount += nxcount;
 
@@ -36,27 +39,35 @@ public static class DnsQueryAnalyzer
 
     public static bool IsSuspicious(DomainState state, out ICollection<string> reasons)
     {
+        // TODO: check for the recency of the domain registration. There should be a configurable threshold
+        // for how long a domain can be considered suspicious based on its age. Recent domains with even
+        // moderately high entropy or unique subdomains should be considered suspicious.
         reasons = [];
         if (HasHighNxDomainRatio(state)) reasons.Add("High NXDOMAIN ratio");
         if (HasHighUniqueSubdomains(state)) reasons.Add("High unique subdomains");
         if (HasLongLabels(state)) reasons.Add("Has long labels");
         if (HasTooManyLabels(state)) reasons.Add("Has too many labels");
         if (HasHighShannonEntropy(state)) reasons.Add("Has high Shannon entropy");
+        if (HasHighRelativeEntropy(state)) reasons.Add("Has high relative entropy");
+        // Add a catch-all for overall jankiness
         if (HasHighOverallJankiness(state)) reasons.Add("High overall jankiness");
         return reasons.Count > 0;
     }
 
     private static bool HasHighOverallJankiness(DomainState state)
     {
-        // calculate an overall risk scope based on the various metrics even if they
+        // calculate an overall risk scope based on more lax versions of the metrics even if they
         // don't individually trigger a suspicious flag
-        double riskScore = 0.0;
-        if (HasHighNxDomainRatio(state, 0.1)) riskScore += 0.2; // moderate threshold
-        if (HasHighUniqueSubdomains(state, 1000)) riskScore += 0.2; // moderate threshold
-        if (HasLongLabels(state, 60, 40)) riskScore += 0.2; // moderate threshold
-        if (HasTooManyLabels(state, 12, 10)) riskScore += 0.2; // moderate threshold
-        if (HasHighShannonEntropy(state, 5.0, 4.5)) riskScore += 0.2; // moderate threshold
-        return riskScore >= 0.6; // if we hit 60% of the risk score, consider it suspicious
+        var risk_components = new[] {
+            HasHighNxDomainRatio(state, 0.1),
+            HasHighUniqueSubdomains(state, 1000),
+            HasLongLabels(state, 50, 30),
+            HasTooManyLabels(state, 8, 6),
+            HasHighShannonEntropy(state, 4.5, 4.0),
+            HasHighRelativeEntropy(state, 2.5, 2.0)
+        };
+        double riskScore = risk_components.Count(c => c) / (double)risk_components.Length;
+        return riskScore >= 0.6; // if we hit 50% of the risk score, consider it suspicious
     }
 
     public static bool HasHighNxDomainRatio(DomainState state, double threshold = 0.25)
@@ -83,6 +94,11 @@ public static class DnsQueryAnalyzer
     public static bool HasHighShannonEntropy(DomainState state, double maxMaxEntropy = 4.7, double maxAvgEntropy = 4.2)
     {
         return state.AvgEntropy >= maxAvgEntropy || state.MaxEntropy >= maxMaxEntropy;
+    }
+
+    public static bool HasHighRelativeEntropy(DomainState state, double maxMaxRelativeEntropy = 3.0, double maxAvgRelativeEntropy = 2.0)
+    {
+        return state.AvgRelativeEntropy >= maxAvgRelativeEntropy || state.MaxRelativeEntropy >= maxMaxRelativeEntropy;
     }
 
     private static double ComputeEntropy(string input)

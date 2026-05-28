@@ -10,6 +10,9 @@ public class DomainState
     public double MaxEntropy { get; set; } = 0;
     public double AvgEntropy { get; set; } = 0.0;
 
+    public double MaxRelativeEntropy { get; set; } = 0.0;
+    public double AvgRelativeEntropy { get; set; } = 0.0;
+
     public int MaxLength { get; set; } = 0;
     public double AvgLength { get; set; } = 0;
 

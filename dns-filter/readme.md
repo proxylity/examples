@@ -1,26 +1,26 @@
-# MyDNS (aka. dns-filter)
+# Custom DNS Resolver
 
-MyDNS is a personal DNS service that can be run in your AWS account and provides UDP and DNS over HTTPS (DoH) endpoints. DoH is optional, and if enabled requires a registered domain name and hosted zone(see below). MyDNS can block (NXDOMAIN responses) and redirect (override the IP) both domain names and Autonomous Systems (by ASN). And, optionally (enabled by default) also logs DNS queries and performs analysis looking for suspicious activity. MyDNS is entirely serverless, but does require a subscription to Proxylity UDP Gateway.
+This DNS service that can be run in your AWS account and provides UDP and DNS over HTTPS (DoH) endpoints. DoH is optional, and if enabled requires a registered domain name and hosted zone(see below). With this service you can block (NXDOMAIN responses) and redirect (override the IP) both domain names and Autonomous Systems (by ASN). And, optionally (enabled by default) also log DNS queries and performs analysis looking for suspicious activity. The system is entirely serverless, has zero idle cost, and scale to meet demand automatically. A subscription to Proxylity UDP Gateway is require to deploy this system.
 
 ## Why?
 
 This project is motivated by some simple realities:
 
 * DNS is a foundational service required to use the internet effectively
-* DNS filtering is a capability that protects users and networks from undesirable content, malfeasance, misuse and abuse. 
-* Privacy concerns motivate avoiding using DNS services provided by ISPs and others who may collect DNS information to build user profiles and sell them to third parties.
+* DNS abuse detection and filtering is a capability that protects users and networks from undesirable content, malfeasance, misuse and abuse. 
+* Legitimate privacy concerns around using DNS services provided by ISPs and others who may collect DNS information to build user profiles and sell them to third parties.
 
 ## Features
 
-My DNS can:
+This DNS resolver:
 
-* Block domains by returning an "nonexistent domain" (NXDOMAIN) response when queries for them
-* Redirect domains by returning a specified IP address (to a portal, for example) for matching queries
-* Block or redirect IPs by Autonomous System Number (ASN) by examining upstream DNS responses and matching the IPs they return to ASNs.
-* Support traditional UDP-based DNS that is used by most devices and operating systems
-* Support DNS over HTTPS (DoH) for use in browsers ([RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484))
-* Proxy unmatched DNS requests to an upstream DNS service of your choice (default is 1.0.0.3).  The upstream DNS will see a public AWS IP address as the client rather than your own, enhancing privacy.
-* Incur low usage-based costs (free when within the AWS and Proxylity free tiers). 
+* Blocks domains by returning an "nonexistent domain" (NXDOMAIN) response when queries for them
+* Redirects domains by returning a specified IP address (to a portal, for example) for matching queries
+* Blocks or redirects by Autonomous System Number (ASN) by examining upstream DNS responses and matching the IPs they return to ASNs.
+* Supports traditional UDP-based DNS that is used by most devices and operating systems
+* Supports DNS over HTTPS (DoH) for use in browsers ([RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484))
+* Proxies unmatched DNS requests to an upstream DNS service of your choice (default is 1.0.0.3).  The upstream DNS will see a public AWS IP address as the service rather than your own (enhancing privacy).
+* Incurs low usage-based costs (free when within the AWS and Proxylity free tiers). 
 
 > **NOTE**: This service provides UDP-based DNS on a non-standard port (i.e. not port 53).  Unfortunately, Windows doesn't allow configuring DNS servers on an alternate port (Linux does with `dnsmasq`), so a network level configuration is required to use it (DNAT at the router).  On hardware that supports it like Cisco (IOS/IOS-XE), DNAT can be used to redirect traffic bound to port 53 to this service. Other network hardware like Juniper Mist and Palo Alto have UI and/or API based configuration methods to support something similar. Merkaki MX, it seems, it doesn't appear possible since it lacks DNAT support.
 
@@ -86,7 +86,7 @@ event-bridge-->dns-asn-sync-lambda--->dynamodb-table
 
 ## Deploying
 
-> **NOTE**: The account in which you deploy MyDNS **must be subscribed to Proxylity UDP Gateay**, which is available in [AWS Marketplace]().  Subscribing is free and you will only be billed for Listeners you create and traffic delivered to Destinations you configure.  For personal use it is likely that MyDNS will operate within the AWS and Proxylity free tiers. For more information see [proxylity.com](https://proxylity.com/landing/love.html).
+> **NOTE**: The account in which you deploy **must be subscribed to Proxylity UDP Gateay**, which is available in [AWS Marketplace]().  Subscribing is free and you will only be billed for Listeners you create and traffic delivered to Destinations you configure.  For personal use it is likely that MyDNS will operate within the AWS and Proxylity free tiers. For more information see [proxylity.com](https://proxylity.com/landing/love.html).
 
 > **NOTE**: The instructions below assume the `aws` CLI, `jq` and [`dnsstress`](https://mickaelbergem.github.io/dnsstresss/) are available on your Linux system (WSL 2 works fine). 
 
@@ -292,16 +292,16 @@ Initially, no domains or ASNs are present in the DB and all DNS requests are ans
 
 ## Cleanup
 
-To remove the MyDNS, first empty the content of the regional data buckets (names start with "dns-data").  Then remove the stacks:
+To remove, first empty the content of the regional data buckets (names start with "dns-data").  Then remove the stacks:
 ```bash
 ./scripts/teardown.sh
 ``` 
 
-If buckets were created with `prequisites.sh` to facilitate the deployment they will need to be emptied and removed manually.
+Even if buckets were created with `prequisites.sh` to facilitate the deployment they will need to be emptied and removed manually.
 
 ## Roadmap
 
-DNS Filtering is an important network service, and this example shows how to implement it in your own AWS account with little effort while providing full control over privacy, featuring scalability from zero to global demand, and excellent resiliency -- all at a fraction of the cost of alternatives. 
+DNS filtering is an important network service, and this example shows how to implement it in your own AWS account with little effort while providing full control over privacy, featuring scalability from zero to global demand, and excellent resiliency -- all at a fraction of the cost of alternatives. 
 
 That said, some helpful capabilities are still missing from this project:
 
@@ -309,5 +309,4 @@ That said, some helpful capabilities are still missing from this project:
 * A dashboard presentation of DNS metrics, either built into the admin UX or a CloudWatch dashboard vreated as part of the deployment.
 * Email notifications when suspicious domains are found, with "one click" blocking links.
 
-And, of course, this repo is open to pull requests!
-
+This repo is open to pull requests.
