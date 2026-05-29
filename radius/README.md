@@ -1,6 +1,6 @@
 # Serverless RADIUS on AWS
 
-Run a fully serverless RADIUS authentication and accounting server on AWS — no EC2, no FreeRADIUS to maintain, no capacity planning. Traffic between your network gear and Proxylity travels inside a WireGuard tunnel, so RADIUS exchanges are encrypted in transit without any additional configuration. Lambda handles everything on the cloud side.
+Run a fully serverless RADIUS/wg authentication and accounting server on AWS — no EC2, no FreeRADIUS to maintain, no capacity planning. Traffic between your network gear and Proxylity travels inside a WireGuard tunnel, so RADIUS exchanges are encrypted in transit without any additional configuration. Lambda handles everything on the cloud side.
 
 This is a complete, working implementation tested with Unifi guest portals. Running on the Proxylity UDP Gateway platform means it works equally well for a guest network at home as it does for centralizing authentication for a global portfollio of corporate or hospitality properties.
 
