@@ -15,6 +15,52 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
     const string SYSTEM_PROMPT = "You are a RADIUS security expert. Analyze the provided summary of RADIUS authentication requests and identify security concerns such as unusual request volumes, repeated failures, unexpected NAS identifiers, or suspicious IP and MAC patterns. Use the report_anomalies tool to report your findings — report an empty list if no concerns are detected.";
     const string USER_PROMPT = "remote_ip,called_station,calling_station,packet_code,count\n";
 
+    static readonly Amazon.BedrockRuntime.Model.ToolConfiguration _tool_config = new()
+    {
+        Tools =
+        [
+            new()
+            {
+                ToolSpec = new()
+                {
+                    Name = "report_anomalies",
+                    Description = "Report security anomalies detected in RADIUS authentication traffic",
+                    InputSchema = new()
+                    {
+                        Json = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                        {
+                            ["type"] = new("object"),
+                            ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                            {
+                                ["anomalies"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                {
+                                    ["type"] = new("array"),
+                                    ["items"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                    {
+                                        ["type"] = new("object"),
+                                        ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                        {
+                                            ["entity_type"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
+                                            {
+                                                ["type"] = new("string"),
+                                                ["enum"] = new(new List<Amazon.Runtime.Documents.Document> { new("ip"), new("calling_station"), new("nas") })
+                                            }),
+                                            ["value"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") }),
+                                            ["reason"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") })
+                                        }),
+                                        ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("entity_type"), new("value"), new("reason") })
+                                    })
+                                })
+                            }),
+                            ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("anomalies") })
+                        })
+                    }
+                }
+            }
+        ],
+        ToolChoice = new() { Any = new() }
+    };
+
     public Function() : this(new Amazon.S3.AmazonS3Client(), new Amazon.BedrockRuntime.AmazonBedrockRuntimeClient(), new Amazon.DynamoDBv2.AmazonDynamoDBClient()) { }
 
     public async Task<AggregationResponse> FunctionHandler(AggregationRequest request, Amazon.Lambda.Core.ILambdaContext context)
@@ -77,51 +123,7 @@ public class Function(Amazon.S3.IAmazonS3 s3, Amazon.BedrockRuntime.IAmazonBedro
                 MaxTokens = 512,
                 Temperature = 0.1f
             },
-            ToolConfig = new Amazon.BedrockRuntime.Model.ToolConfiguration
-            {
-                Tools =
-                [
-                    new()
-                    {
-                        ToolSpec = new()
-                        {
-                            Name = "report_anomalies",
-                            Description = "Report security anomalies detected in RADIUS authentication traffic",
-                            InputSchema = new()
-                            {
-                                Json = new Amazon.Runtime.Documents.Document(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                {
-                                    ["type"] = new("object"),
-                                    ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                    {
-                                        ["anomalies"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                        {
-                                            ["type"] = new("array"),
-                                            ["items"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                            {
-                                                ["type"] = new("object"),
-                                                ["properties"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                                {
-                                                    ["entity_type"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document>
-                                                    {
-                                                        ["type"] = new("string"),
-                                                        ["enum"] = new(new List<Amazon.Runtime.Documents.Document> { new("ip"), new("calling_station"), new("nas") })
-                                                    }),
-                                                    ["value"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") }),
-                                                    ["reason"] = new(new Dictionary<string, Amazon.Runtime.Documents.Document> { ["type"] = new("string") })
-                                                }),
-                                                ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("entity_type"), new("value"), new("reason") })
-                                            })
-                                        })
-                                    }),
-                                    ["required"] = new(new List<Amazon.Runtime.Documents.Document> { new("anomalies") })
-                                })
-                            }
-                        }
-                    }
-                ],
-                ToolChoice = new() { Any = new() }
-            }
+            ToolConfig = _tool_config
         });
 
         // 4. Update DDB tables with the aggregated counts.
