@@ -499,3 +499,8 @@ build/
 # Vscode
 .vscode/
 
+radius/global-outputs.json
+radius/peer_private.key
+radius/peer_public.key
+radius/radius_shared_secret.txt
+radius/radius-global.outputs
