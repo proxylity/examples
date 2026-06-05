@@ -51,7 +51,7 @@
                                     "Arguments": {
                                         "Body": "{% $states.input %}",
                                         "Bucket": "${RADIUS_ACCT_DATA_BUCKET}",
-                                        "Key": "{% 'sessions/' & $states.input.attributes.'Acct-Session-Id' & '/' & $states.input.attributes.'Event-Timestamp' & '-' & $states.input.identifier & '.json' %}"
+                                        "Key": "{% 'sessions/' & $states.input.attributes.'Acct-Session-Id' & '/' & ($exists($states.input.attributes.'Event-Timestamp') ? $states.input.attributes.'Event-Timestamp' : $millis($states.context.State.EnteredTime) / 1000) & '-' & $states.input.identifier & '.json' %}"
                                     },
                                     "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
                                     "End": true
