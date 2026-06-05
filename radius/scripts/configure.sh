@@ -29,7 +29,7 @@ export STACK_NAME="${STACK_NAME:-radius}"
 export TRANSPORT="${TRANSPORT:-WireGuard}"
 
 # The public key for the WireGuard peer that will connect to the RADIUS authentication 
-# and accounting listeners. Unless specified, the we'll generate and save a random key pair 
+# and accounting listeners. Unless specified, we'll generate and save a random key pair 
 # for the first peer and use the public key for both the authentication and accounting 
 # listeners. To specify your own key, set the `PEER_PUBLIC_KEY` environment variable to
 # a base64-encoded public key. Each key must be 32 bytes (44 characters when encoded).
