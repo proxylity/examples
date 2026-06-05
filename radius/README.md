@@ -111,9 +111,10 @@ The UDM/UDM-Pro acts as the WireGuard client. Configure two VPN client tunnels �
 **Step 1 — Create the WireGuard tunnel config files**
 
 Auth tunnel (`radius-auth.conf`):
-```ini
+```bash
+cat radius-auth.conf << EOF
 [Interface]
-PrivateKey = <contents of peer_private.key>
+PrivateKey = $(cat peer_private.key)
 Address = 10.10.10.20/32
 
 [Peer]
@@ -121,12 +122,14 @@ PublicKey = ${AUTH_WG_KEY}
 Endpoint = ${AUTH_ENDPOINT}
 AllowedIPs = 10.10.10.21/32
 PersistentKeepalive = 25
+EOF
 ```
 
 Acct tunnel (`radius-acct.conf`):
-```ini
+```bash
+cat radius-acct.conf << EOF
 [Interface]
-PrivateKey = <contents of peer_private.key>
+PrivateKey = $(cat peer_private.key)
 Address = 10.10.10.22/32
 
 [Peer]
@@ -134,6 +137,7 @@ PublicKey = ${ACCT_WG_KEY}
 Endpoint = ${ACCT_ENDPOINT}
 AllowedIPs = 10.10.10.23/32
 PersistentKeepalive = 25
+EOF
 ```
 
 > `AllowedIPs` scoped to a single `/32` means only packets destined for that tunnel IP are routed through WireGuard — all other traffic (internet, LAN) is unaffected.
@@ -149,7 +153,7 @@ PersistentKeepalive = 25
 1. Go to **Settings > Networks > RADIUS Servers** and select **Create New**
 2. Set the authentication server address to `10.10.10.21` and port to `1812`
 3. Set the accounting server address to `10.10.10.23` and port to `1813`
-4. Set the shared secret to match `RadiusSharedSecret`
+4. Set the shared secret to match `RadiusSharedSecret` (in `radius_shared_secret.txt`)
 
 **MAC Authentication Bypass:**
 1. Go to **Settings > WiFi**, select your SSID, and enable **RADIUS MAC Authentication**
