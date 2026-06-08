@@ -93,7 +93,7 @@
                             },
                             {
                                 "Next": "Get Necessary Records",
-                                "Condition": "{% $length($user_password) > 0 and $user_name = $user_password and /[0-9a-f]{12}/i($replace($user_name,/-|:|\\s/,'')) %}",
+                                "Condition": "{% $length($user_password) > 0 and $user_name = $user_password and /[0-9a-fA-F]{12}/i($replace($user_name,/-|:|\\s/,'')) %}",
                                 "Comment": "MAC Auth",
                                 "Assign": {
                                     "auth_type": "mac"
