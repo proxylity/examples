@@ -76,6 +76,8 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
             foreach (var item in response.Items)
             {
                 if (!item.TryGetValue("Remote", out var remoteAttr)) continue;
+                if (!item.TryGetValue("EgressRegion", out var er) || string.IsNullOrEmpty(er.S)) continue;
+                
                 var remote = JsonSerializer.Deserialize(remoteAttr.S, JsonContext.Default.RemoteEndpoint);
                 if (remote is null) continue;
 
@@ -87,7 +89,8 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
                     ClientEndpoint: item["ClientEndpoint"].S,
                     Token:          item["Token"].S,
                     Remote:         remote,
-                    Inner:          inner
+                    Inner:          inner,
+                    EgressRegion:   er.S
                 ));
             }
 
@@ -153,6 +156,12 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
         await _sns.PublishAsync(new PublishRequest
         {
             TopicArn = REPLY_TOPIC_ARN,
+            MessageAttributes = new()
+            {
+                // Route the packet to the regional delivery queue for the region where
+                // the client's WireGuard session was established (stored at registration time).
+                ["EgressRegion"] = new MessageAttributeValue { DataType = "String", StringValue = record.EgressRegion }
+            },
             Message  = envelope
         }, CancellationToken.None);
 
@@ -164,7 +173,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
 // ── Domain records ─────────────────────────────────────────────────────────────
 
 /// <summary>Row from the ObserveTable — one active subscription.</summary>
-public record ObserveRecord(string ClientEndpoint, string Token, RemoteEndpoint Remote, InnerInfo? Inner);
+public record ObserveRecord(string ClientEndpoint, string Token, RemoteEndpoint Remote, InnerInfo? Inner, string EgressRegion);
 
 /// <summary>
 /// Client endpoint stored in DDB as a JSON string using outbound field names

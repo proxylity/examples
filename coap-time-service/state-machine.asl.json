@@ -141,6 +141,9 @@
                                 "Inner": {
                                     "S": "{% $exists($states.input.Inner) ? $string($states.input.Inner) : '' %}"
                                 },
+                                "EgressRegion": {
+                                    "S": "{% $states.context.Map.Item.Value.IngressRegion %}"
+                                },
                                 "Expires": {
                                     "N": "{% $string($floor($toMillis($now()) / 1000) + 180) %}"
                                 }
