@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LanguageVersion>latest</LanguageVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>CoapDemo.Common</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.18.4" />
+    <PackageReference Include="AWSSDK.SQS" Version="4.0.3.4" />
+    <PackageReference Include="AWSSDK.EventBridge" Version="4.0.1" />
+    <PackageReference Include="System.Formats.Cbor" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>

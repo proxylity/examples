@@ -1,0 +1,165 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Global resources for the coap-demo example: a multi-region DynamoDB Global Table and a single Proxylity UDP Gateway Listener whose CoAP requests are routed to the regional stack (region.template.json) closest to the client. Deploying this template requires an active Proxylity UDP Gateway subscription (Packet Sources used for CoAP Observe/async responses are not available on the Free plan).",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describing which IP addresses should be allowed to use the CoAP listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "GlobalTable": {
+      "Type": "AWS::DynamoDB::GlobalTable",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "TimeToLiveSpecification": {
+          "AttributeName": "Expires",
+          "Enabled": true
+        },
+        "AttributeDefinitions": [
+          { "AttributeName": "PK", "AttributeType": "S" },
+          { "AttributeName": "SK", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "PK", "KeyType": "HASH" },
+          { "AttributeName": "SK", "KeyType": "RANGE" }
+        ],
+        "Replicas": [
+          { "Region": "us-west-2" },
+          { "Region": "us-east-1" },
+          { "Region": "eu-west-1" }
+        ]
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Metadata": {
+        "Comment": "Assumed by Proxylity's service both to invoke the regional RequestHandler Lambda (inbound) and to manage its subscription to each region's outbound Packet Source SNS topic. IAM roles are global, so this single role is shared by every regional stack -- see region.template.json for the per-region policies attached to it."
+      },
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceRole" ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "DeliveryObservability",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "PutMetricData",
+              "Effect": "Allow",
+              "Action": "cloudwatch:PutMetricData",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DeliveryLogs",
+              "Effect": "Allow",
+              "Action": [ "logs:CreateLogStream", "logs:PutLogEvents" ],
+              "Resource": [
+                { "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/coap-demo/RequestHandler/DeliveryLogs:*" }
+              ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "DestinationRole" } ]
+      }
+    },
+
+    "Listener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceToken" ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [ "ProxylityConfig", "Account", "ApiKey" ]
+        },
+        "Name": { "Fn::Sub": "${AWS::StackName}-listener" },
+        "Description": "coap-demo CoAP API listener.",
+        "Protocols": [ "udp" ],
+        "ClientRestrictions": {
+          "Networks": [ { "Ref": "ClientCidrToAllow" } ]
+        },
+        "Destinations": [
+          {
+            "Name": { "Fn::Sub": "${AWS::StackName}-RequestHandler" },
+            "Description": "Decodes each inbound CoAP packet and delivers it to the RequestHandler Lambda closest to the client's ingress region; the DestinationArn for each region is set independently by that region's stack (Custom::ProxylityUdpGatewayDestinationArn).",
+            "Role": {
+              "Arn": { "Fn::GetAtt": [ "DestinationRole", "Arn" ] }
+            },
+            "Formatter": "coap",
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 0.1
+            },
+            "MetricsEnabled": true,
+            "LogGroupName": "/coap-demo/RequestHandler/DeliveryLogs"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "GlobalTableName": {
+      "Description": "Name of the DynamoDB Global Table shared by every region.",
+      "Value": { "Ref": "GlobalTable" }
+    },
+    "DestinationRoleArn": {
+      "Description": "ARN of the shared IAM role Proxylity assumes for inbound delivery and outbound Packet Source subscriptions.",
+      "Value": { "Fn::GetAtt": [ "DestinationRole", "Arn" ] }
+    },
+    "ListenerId": {
+      "Description": "Physical ID of the CoAP listener, used by each regional stack to attach its Packet Source.",
+      "Value": { "Ref": "Listener" }
+    },
+    "RequestHandlerDestinationName": {
+      "Description": "Name of the RequestHandler destination; each region sets its own DestinationArn against this name.",
+      "Value": {
+        "Fn::Select": [ 0, { "Fn::GetAtt": [ "Listener", "DestinationNames" ] } ]
+      }
+    },
+    "Domain": {
+      "Description": "DNS domain of the listener (append .proxylity.com).",
+      "Value": { "Fn::GetAtt": [ "Listener", "Domain" ] }
+    },
+    "Port": {
+      "Description": "UDP port of the listener.",
+      "Value": { "Fn::GetAtt": [ "Listener", "Port" ] }
+    },
+    "Endpoint": {
+      "Description": "host:port endpoint for the CoAP listener.",
+      "Value": { "Fn::Sub": "${Listener.Domain}.proxylity.com:${Listener.Port}" }
+    }
+  }
+}

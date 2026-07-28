@@ -1,0 +1,551 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Regional resources for the coap-demo example: the regional DynamoDB table, the four Lambda functions (RequestHandler, AsyncResponder, RegionalAggregator, GlobalNotifier), the outbound Packet Source, and the EventBridge Scheduler group used for CoAP separate (async) responses. Deploy templates/global.template.json first and capture its outputs into global-outputs.json (see scripts/deploy.sh) before deploying this template.",
+  "Parameters": {
+    "GlobalTableStreamArn": {
+      "Description": "ARN of this region's replica stream of the Global Table (obtained via `aws dynamodb describe-table --query Table.LatestStreamArn` after the global stack is deployed -- see scripts/deploy.sh).",
+      "Type": "String"
+    },
+    "LambdaLogLevel": {
+      "Description": "Log level for Lambda functions.",
+      "Type": "String",
+      "Default": "INFO",
+      "AllowedValues": [ "DEBUG", "INFO", "WARN", "ERROR" ]
+    },
+    "ObserveTtlSeconds": {
+      "Description": "TTL, in seconds, applied to Observe subscriptions in the Global Table.",
+      "Type": "Number",
+      "Default": 300
+    },
+    "AsyncDelaySeconds": {
+      "Description": "Delay, in seconds, before /coap/async delivers its deferred separate response.",
+      "Type": "Number",
+      "Default": 5
+    },
+    "BroadcastRateLimitSeconds": {
+      "Description": "Minimum interval, in seconds, between GlobalNotifier broadcasts of the same high-frequency system resource (/system/metrics, /system/time) to its region's Observe subscribers.",
+      "Type": "Number",
+      "Default": 60
+    },
+    "LogRetentionDays": {
+      "Description": "Number of days to retain Lambda logs in CloudWatch Logs.",
+      "Type": "Number",
+      "Default": 30
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": { "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json" }
+        }
+      }
+    },
+    "GlobalStack": {
+      "Outputs": {
+        "Fn::Transform": {
+          "Name": "AWS::Include",
+          "Parameters": { "Location": "../global-outputs.json" }
+        }
+      }
+    }
+  },
+  "Resources": {
+
+    "RegionalTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "StreamSpecification": { "StreamViewType": "NEW_AND_OLD_IMAGES" },
+        "TimeToLiveSpecification": { "AttributeName": "Expires", "Enabled": true },
+        "AttributeDefinitions": [
+          { "AttributeName": "PK", "AttributeType": "S" },
+          { "AttributeName": "SK", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "PK", "KeyType": "HASH" },
+          { "AttributeName": "SK", "KeyType": "RANGE" }
+        ]
+      }
+    },
+
+    "ReplyTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": { "Fn::Sub": "${AWS::StackName} CoAP Outbound (Observe / async)" }
+      }
+    },
+
+    "ReplyTopicSubscribePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": { "Fn::Sub": "${AWS::StackName}-ReplyTopicSubscribe-${AWS::Region}" },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "SubscriptionManagement",
+              "Effect": "Allow",
+              "Action": [ "sns:Subscribe", "sns:Unsubscribe", "sns:ListSubscriptionsByTopic" ],
+              "Resource": [ { "Ref": "ReplyTopic" } ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              { "Fn::Split": [ "/", { "Fn::FindInMap": [ "GlobalStack", "Outputs", "DestinationRoleArn" ] } ] }
+            ]
+          }
+        ]
+      }
+    },
+
+    "PacketSource": {
+      "DependsOn": [ "ReplyTopicSubscribePolicy" ],
+      "Type": "Custom::ProxylityUdpGatewayPacketSource",
+      "Properties": {
+        "ServiceToken": { "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceToken" ] },
+        "ApiKey": { "Fn::FindInMap": [ "ProxylityConfig", "Account", "ApiKey" ] },
+        "Enabled": true,
+        "ListenerName": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "ListenerId" ] },
+        "SnsTopicSource": {
+          "Role": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "DestinationRoleArn" ] },
+          "TopicArn": { "Ref": "ReplyTopic" }
+        }
+      }
+    },
+
+    "AsyncQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "VisibilityTimeout": 30
+      }
+    },
+
+    "RequestHandlerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ]
+      }
+    },
+
+    "RequestHandlerPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "RequestHandlerPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "GlobalTableAccess",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query" ],
+              "Resource": [
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${GlobalTableName}",
+                    { "GlobalTableName": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] } }
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "RegionalTableAccess",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query" ],
+              "Resource": [ { "Fn::GetAtt": [ "RegionalTable", "Arn" ] } ]
+            },
+            {
+              "Sid": "EnqueueAsyncResponses",
+              "Effect": "Allow",
+              "Action": "sqs:SendMessage",
+              "Resource": [ { "Fn::GetAtt": [ "AsyncQueue", "Arn" ] } ]
+            },
+            {
+              "Sid": "ContactEvents",
+              "Effect": "Allow",
+              "Action": "events:PutEvents",
+              "Resource": [ { "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default" } ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "RequestHandlerRole" } ]
+      }
+    },
+
+    "RequestHandlerFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Metadata": { "BuildMethod": "makefile" },
+      "Properties": {
+        "CodeUri": "../src/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "MemorySize": 512,
+        "Timeout": 10,
+        "Role": { "Fn::GetAtt": [ "RequestHandlerRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "GLOBAL_TABLE_NAME": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] },
+            "REGIONAL_TABLE_NAME": { "Ref": "RegionalTable" },
+            "ASYNC_QUEUE_URL": { "Ref": "AsyncQueue" },
+            "EVENT_BUS_NAME": "default",
+            "OBSERVE_TTL_SECONDS": { "Ref": "ObserveTtlSeconds" },
+            "ASYNC_DELAY_SECONDS": { "Ref": "AsyncDelaySeconds" },
+            "DEPLOYED_VERSION": { "Fn::Sub": "${AWS::StackName}" },
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": { "Ref": "LambdaLogLevel" },
+          "SystemLogLevel": "INFO",
+          "LogGroup": { "Ref": "RequestHandlerLogGroup" }
+        }
+      }
+    },
+
+    "RequestHandlerLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-request-handler" },
+        "RetentionInDays": { "Ref": "LogRetentionDays" }
+      }
+    },
+
+    "RequestHandlerInvokePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": { "Fn::Sub": "${AWS::StackName}-InvokeRequestHandler-${AWS::Region}" },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "lambda:InvokeFunction",
+              "Resource": [ { "Fn::GetAtt": [ "RequestHandlerFunction", "Arn" ] } ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              { "Fn::Split": [ "/", { "Fn::FindInMap": [ "GlobalStack", "Outputs", "DestinationRoleArn" ] } ] }
+            ]
+          }
+        ]
+      }
+    },
+
+    "RequestHandlerDestinationArn": {
+      "DependsOn": [ "RequestHandlerInvokePolicy" ],
+      "Type": "Custom::ProxylityUdpGatewayDestinationArn",
+      "Properties": {
+        "ServiceToken": { "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceToken" ] },
+        "ApiKey": { "Fn::FindInMap": [ "ProxylityConfig", "Account", "ApiKey" ] },
+        "Destination": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "RequestHandlerDestinationName" ] },
+        "IngressRegionKey": { "Ref": "AWS::Region" },
+        "Arn": { "Fn::GetAtt": [ "RequestHandlerFunction", "Arn" ] }
+      }
+    },
+
+    "AsyncResponderRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ]
+      }
+    },
+
+    "AsyncResponderPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AsyncResponderPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "PublishReply",
+              "Effect": "Allow",
+              "Action": "sns:Publish",
+              "Resource": [ { "Ref": "ReplyTopic" } ]
+            },
+            {
+              "Sid": "ConsumeAsyncQueue",
+              "Effect": "Allow",
+              "Action": [ "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes" ],
+              "Resource": [ { "Fn::GetAtt": [ "AsyncQueue", "Arn" ] } ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "AsyncResponderRole" } ]
+      }
+    },
+
+    "AsyncResponderFunction": {
+      "DependsOn": [ "AsyncResponderPolicy" ],
+      "Type": "AWS::Serverless::Function",
+      "Metadata": { "BuildMethod": "makefile" },
+      "Properties": {
+        "CodeUri": "../src/",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "MemorySize": 256,
+        "Timeout": 10,
+        "Role": { "Fn::GetAtt": [ "AsyncResponderRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "REPLY_TOPIC_ARN": { "Ref": "ReplyTopic" },
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1"
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": { "Ref": "LambdaLogLevel" },
+          "SystemLogLevel": "INFO",
+          "LogGroup": { "Ref": "AsyncResponderLogGroup" }
+        },
+        "Events": {
+          "AsyncQueueEvent": {
+            "Type": "SQS",
+            "Properties": {
+              "Queue": { "Fn::GetAtt": [ "AsyncQueue", "Arn" ] },
+              "BatchSize": 1,
+              "Enabled": true
+            }
+          }
+        }
+      }
+    },
+
+    "AsyncResponderLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-async-responder" },
+        "RetentionInDays": { "Ref": "LogRetentionDays" }
+      }
+    },
+
+    "RegionalAggregatorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ]
+      }
+    },
+
+    "RegionalAggregatorPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "RegionalAggregatorPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadRegionalStream",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams" ],
+              "Resource": [ { "Fn::GetAtt": [ "RegionalTable", "StreamArn" ] } ]
+            },
+            {
+              "Sid": "UpdateGlobalTable",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:UpdateItem" ],
+              "Resource": [
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${GlobalTableName}",
+                    { "GlobalTableName": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] } }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "RegionalAggregatorRole" } ]
+      }
+    },
+
+    "RegionalAggregatorFunction": {
+      "Type": "AWS::Serverless::Function",
+      "DependsOn": [ "RegionalAggregatorPolicy" ],
+      "Properties": {
+        "CodeUri": "../src/RegionalAggregator/",
+        "Runtime": "dotnet10",
+        "Handler": "RegionalAggregator::RegionalAggregator.Function::FunctionHandler",
+        "MemorySize": 256,
+        "Timeout": 30,
+        "Role": { "Fn::GetAtt": [ "RegionalAggregatorRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "GLOBAL_TABLE_NAME": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] }
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": { "Ref": "LambdaLogLevel" },
+          "SystemLogLevel": "INFO",
+          "LogGroup": { "Ref": "RegionalAggregatorLogGroup" }
+        },
+        "Events": {
+          "RegionalTableStream": {
+            "Type": "DynamoDB",
+            "Properties": {
+              "Stream": { "Fn::GetAtt": [ "RegionalTable", "StreamArn" ] },
+              "StartingPosition": "LATEST",
+              "BatchSize": 100,
+              "MaximumBatchingWindowInSeconds": 1,
+              "MaximumRetryAttempts": 3
+            }
+          }
+        }
+      }
+    },
+
+    "RegionalAggregatorLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-regional-aggregator" },
+        "RetentionInDays": { "Ref": "LogRetentionDays" }
+      }
+    },
+
+    "GlobalNotifierRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ]
+      }
+    },
+
+    "GlobalNotifierPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "GlobalNotifierPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadGlobalTableReplicaStream",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams" ],
+              "Resource": [ { "Ref": "GlobalTableStreamArn" } ]
+            },
+            {
+              "Sid": "GlobalTableAccess",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:GetItem", "dynamodb:Query" ],
+              "Resource": [
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${GlobalTableName}",
+                    { "GlobalTableName": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] } }
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "RegionalTableAccess",
+              "Effect": "Allow",
+              "Action": [ "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem" ],
+              "Resource": [ { "Fn::GetAtt": [ "RegionalTable", "Arn" ] } ]
+            },
+            {
+              "Sid": "PublishNotifications",
+              "Effect": "Allow",
+              "Action": "sns:Publish",
+              "Resource": [ { "Ref": "ReplyTopic" } ]
+            }
+          ]
+        },
+        "Roles": [ { "Ref": "GlobalNotifierRole" } ]
+      }
+    },
+
+    "GlobalNotifierFunction": {
+      "Type": "AWS::Serverless::Function",
+      "DependsOn": [ "GlobalNotifierPolicy" ],
+      "Properties": {
+        "CodeUri": "../src/GlobalNotifier/",
+        "Runtime": "dotnet10",
+        "Handler": "GlobalNotifier::GlobalNotifier.Function::FunctionHandler",
+        "MemorySize": 256,
+        "Timeout": 30,
+        "Role": { "Fn::GetAtt": [ "GlobalNotifierRole", "Arn" ] },
+        "Environment": {
+          "Variables": {
+            "GLOBAL_TABLE_NAME": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "GlobalTableName" ] },
+            "REGIONAL_TABLE_NAME": { "Ref": "RegionalTable" },
+            "REPLY_TOPIC_ARN": { "Ref": "ReplyTopic" },
+            "BROADCAST_RATE_LIMIT_SECONDS": { "Ref": "BroadcastRateLimitSeconds" }
+          }
+        },
+        "LoggingConfig": {
+          "LogFormat": "JSON",
+          "ApplicationLogLevel": { "Ref": "LambdaLogLevel" },
+          "SystemLogLevel": "INFO",
+          "LogGroup": { "Ref": "GlobalNotifierLogGroup" }
+        },
+        "Events": {
+          "GlobalTableReplicaStream": {
+            "Type": "DynamoDB",
+            "Properties": {
+              "Stream": { "Ref": "GlobalTableStreamArn" },
+              "StartingPosition": "LATEST",
+              "BatchSize": 100,
+              "MaximumBatchingWindowInSeconds": 1,
+              "MaximumRetryAttempts": 3
+            }
+          }
+        }
+      }
+    },
+
+    "GlobalNotifierLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-global-notifier" },
+        "RetentionInDays": { "Ref": "LogRetentionDays" }
+      }
+    }
+  },
+  "Outputs": {
+    "RegionalTableName": {
+      "Description": "Name of this region's DynamoDB table.",
+      "Value": { "Ref": "RegionalTable" }
+    },
+    "RegionalTableStreamArn": {
+      "Description": "Stream ARN of this region's DynamoDB table (consumed by RegionalAggregator).",
+      "Value": { "Fn::GetAtt": [ "RegionalTable", "StreamArn" ] }
+    },
+    "ReplyTopicArn": {
+      "Description": "ARN of this region's outbound Packet Source SNS topic.",
+      "Value": { "Ref": "ReplyTopic" }
+    }
+  }
+}

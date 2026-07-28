@@ -27,21 +27,23 @@ Whether you're building IoT telemetry systems, real-time gaming backends, DNS se
 ## Example Solutions
 
 * **[UDP Packet Counter](packet-counter)** - An introductory example implemented in Lambda, with a [Step Functions variant](packet-counter-sfn). Also available in [Go](packet-counter-go), [C++](packet-counter-cpp), and [Python](packet-counter-python)
-* **[Multi-Region Packet Counter](packet-counter-multi-region)** - Demonstrates global UDP processing with region-specific routing and failover capabilities
 * **[Syslog to Cloud](syslog)** - Enterprise-grade log ingestion over UDP, routing to CloudWatch Logs and S3 via Firehose - completely code-free
-* **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
+* **[Packet Capture](packet-capture)** - Live, browser-based UDP packet capture with real-time display via AppSync Events. Supports plain UDP and WireGuard ingress with no persistent storage. A [deployment walkthrough](https://youtu.be/BUfWxlaHTWo) is available on YouTube.
 * **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
+* **[Kinesis Data Streams](kinesis-streams)** - Directs UDP packets to Amazon Kinesis Data Streams with a dynamic partition key derived from the packet payload
+* **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
+* **[MAVLink to FIFO SQS](mavlink-fifo)** - Delivers MAVLink v1 and v2 drone telemetry packets to a FIFO SQS queue, demonstrating message deduplication and ordered delivery
+* **[Multi-Region Packet Counter](packet-counter-multi-region)** - Demonstrates global UDP processing with region-specific routing and failover capabilities
 * **[Multi-Modal Workflows](multi-modal)** - Sophisticated example combining HTTP browser interactions with UDP processing and long-running tasks
+* **[Momento Cache over UDP](momento-udp)** - Superior performance for GET/SET operations for Momento Cache when network connections degrade
+* **[Supabase over UDP](supabase-udp)** - Calling Supabase via UDP from the edge to integrate IoT devices with your web app
+* **[UDP to REST API](udp-to-http)** - Demonstrates using an "inside out" API Gateway to proxy UDP sensor data to [Adafruit IO](https://io.adafruit.io)'s REST API
 * **[CoAP Time Service](coap-time-service)** - UDP Gateway speaks [CoAP](https://en.wikipedia.org/wiki/Constrained_Application_Protocol) — the REST-like protocol purpose-built for constrained IoT devices. Binary packets are decoded to JSON by the `coap` formatter before delivery, and re-encoded on the way back. A serverless Step Functions state machine routes requests by URI path and handles Confirmable/Non-confirmable semantics correctly, with zero infrastructure to manage.
+* **[CoAP Demo](coap-demo)** - A production-quality multi-region CoAP API demonstrating the full breadth of UDP Gateway's CoAP support: Observe notifications, Block1/Block2 transfers, async separate responses, and a live exercisable endpoint spanning multiple AWS regions
 * **[DNS Filtering Service](dns-filter)** - Production-ready DNS resolver with domain blocking and redirection capabilities for custom DNS infrastructure
+* **[WireGuard Echo Service](wireguard-echo)** - Serverless solution supporting UDP echo and ICMP ping through encrypted tunnels
+* **[IoT Temperature Display/Sensor](wireguard-iot-device)** - IoT device based on a "Cheap Yellow Display" ([1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)) with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) protected telemetry and time synchronization (NTP)
 * **[RADIUS Authorization and Accounting](radius)** - Cloud-based RADIUS authentication and accounting system with session state tracking, packet archiving, and multi-region deployment support. Like FreeRADIUS and NPS if they were modern, scalable and had super powers.
-* **[WireGuard Echo Service](./wireguard-echo/readme.md)** - Serverless solution supporting UDP echo and ICMP ping through encrypted tunnels
-* **[IoT Temperature Display/Sensor](./wireguard-iot-device/README.md)** - IoT device based on a "Cheap Yellow Display"<sup>[1](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), [2](https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/)</sup> with [WireGuard-ESP32](https://github.com/ciniml/WireGuard-ESP32-Arduino) protected telemetry and time synchronization (NTP)
-* **[UDP to REST API](./udp-to-http/readme.md)** - Demonstrates using an "inside out" API Gateway to proxy UDP sensor data to [Adafruit IO](https://io.adafruit.io)'s REST API.
-* **[Momento Cache over UDP](./momento-udp/Readme.md)** - Superior performance for GET/SET operations for Momento Cache when network connections degrade.
-* **[Supabase over UDP](./supabase-udp/README.md)** - Calling Supabase via UDP from the edge to integrate IoT devices with your web app.
-
-And more!
 
 ---
 
