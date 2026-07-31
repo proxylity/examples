@@ -82,6 +82,7 @@
       }
     },
     "PollMethod": {
+      "DependsOn": "ApiGatewayRolePolicy",
       "Type": "AWS::ApiGateway::Method",
       "Properties": {
         "RestApiId": {
@@ -151,6 +152,7 @@
       }
     },
     "RootMethod": {
+      "DependsOn": "ApiGatewayRolePolicy",
       "Type": "AWS::ApiGateway::Method",
       "Properties": {
         "RestApiId": {
@@ -492,6 +494,7 @@
       }
     },
     "UdpListener": {
+      "DependsOn": "DestinationRolePolicy",
       "Type": "Custom::ProxylityUdpGatewayListener",
       "Properties": {
         "ServiceToken": {
@@ -567,33 +570,39 @@
               "Action": "sts:AssumeRole"
             }
           ]
-        },
-        "Policies": [
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowStatesExecute",
+        "Roles": [
           {
-            "PolicyName": "AllowStatesExecute",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
+            "Ref": "DestinationRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Lambda",
+              "Effect": "Allow",
+              "Action": [
+                "states:StartSyncExecution",
+                "states:DescribeStateMachine"
+              ],
+              "Resource": [
                 {
-                  "Sid": "Lambda",
-                  "Effect": "Allow",
-                  "Action": [
-                    "states:StartSyncExecution",
-                    "states:DescribeStateMachine"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::GetAtt": [
-                        "UdpStateMachine",
-                        "Arn"
-                      ]
-                    }
+                  "Fn::GetAtt": [
+                    "UdpStateMachine",
+                    "Arn"
                   ]
                 }
               ]
             }
-          }
-        ]
+          ]
+        }
       }
     },
     "ApiGatewayRole": {
@@ -611,35 +620,41 @@
             }
           ]
         },
-        "ManagedPolicyArns": [],
-        "Policies": [
+        "ManagedPolicyArns": []
+      }
+    },
+    "ApiGatewayRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "StepFunctionsAccess",
+        "Roles": [
           {
-            "PolicyName": "StepFunctionsAccess",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
+            "Ref": "ApiGatewayRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "states:StartExecution",
+                "states:DescribeExecution"
+              ],
+              "Resource": [
                 {
-                  "Effect": "Allow",
-                  "Action": [
-                    "states:StartExecution",
-                    "states:DescribeExecution"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::GetAtt": [
-                        "RootStateMachine",
-                        "Arn"
-                      ]
-                    },
-                    {
-                      "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
-                    }
+                  "Fn::GetAtt": [
+                    "RootStateMachine",
+                    "Arn"
                   ]
+                },
+                {
+                  "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${RootStateMachine.Name}:*"
                 }
               ]
             }
-          }
-        ]
+          ]
+        }
       }
     },
     "ApiKey": {
