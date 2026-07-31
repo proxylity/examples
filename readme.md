@@ -7,22 +7,25 @@ Traditional UDP services require dedicated servers, complex load balancing, and 
 ### Why UDP Gateway Changes Everything
 
 As a software architect or developer, you understand the challenges of building UDP-based systems:
-- **Infrastructure Complexity**: Managing dedicated UDP servers, load balancers, and auto-scaling groups
+
+- **Infrastructure Complexity**: Managing servers and clusters, load balancers, auto-scaling groups, health-checks and failover
 - **Cost Inefficiency**: Paying for idle capacity during low-traffic periods
 - **Operational Overhead**: Monitoring, patching, and maintaining always-on infrastructure
 - **Integration Friction**: Bridging UDP protocols with modern cloud-native services
 
-UDP Gateway eliminates these pain points by providing **UDP as a Service** - serverless UDP processing that integrates seamlessly with AWS Lambda, Step Functions, EventBridge, and other managed services. Your UDP traffic is automatically captured, routed, and processed using the same event-driven patterns you already use for HTTP APIs.
+UDP Gateway eliminates these pain points by providing **UDP as a Service** - serverless UDP processing that integrates seamlessly with AWS Lambda, Step Functions, EventBridge, and other managed services. Your UDP traffic is automatically routed, and processed using the same event-driven patterns you already depend on in your modern architecture.
 
 ### Real-World Integration Patterns
 
-The examples below demonstrate proven architectural patterns that solve actual business challenges. Each example is production-ready and showcases different aspects of serverless UDP architecture - from simple packet processing to complex multi-modal workflows and secure tunneling solutions.
+The examples below demonstrate patterns that can be applied to solve business challenges. Each example showcases different aspects of serverless networking architecture - from simple packet processing to multi-modal workflows to secure tunnelled solutions.
 
-Whether you're building IoT telemetry systems, real-time gaming backends, DNS services, or VPN solutions, these examples provide the blueprints for implementing UDP services that are:
-- ✅ **Serverless-first** - No infrastructure to manage
-- ✅ **Auto-scaling** - Handle traffic spikes effortlessly  
+Whether you're building telemetry systems, real-time backends, enterprise services, or VPN solutions, these examples provide the blueprints for implementing services that are:
+
+- ✅ **Low Maintenance** - No infrastructure to manage
+- ✅ **Auto-scaling** - Handle wide-ranging traffic volumes effortlessly
+- ✅ **Resilient** - Layered redundancy and global scale
 - ✅ **Cost-optimized** - Pay only for packets processed
-- ✅ **Cloud-native** - Integrate with your existing AWS services
+- ✅ **AWS-native** - Integrate with your existing AWS practices
 
 ## Example Solutions
 
