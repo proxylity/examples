@@ -82,6 +82,9 @@
     },
     "PacketCounterStateMachine": {
       "Type": "AWS::Serverless::StateMachine",
+      "DependsOn": [
+        "PacketCounterStateMachineLogsPolicy"
+      ],
       "Properties": {
         "Type": "EXPRESS",
         "Role": { "Fn::GetAtt": [ "PacketCounterStateMachineRole", "Arn" ] },
