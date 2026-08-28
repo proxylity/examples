@@ -51,10 +51,10 @@ LOCATION_EXAMPLE_DOMAIN=$(jq -r ".[]|select(.OutputKey==\"Domain\")|.OutputValue
 LOCATION_EXAMPLE_PORT=$(jq -r ".[]|select(.OutputKey==\"Port\")|.OutputValue" outputs.json)
 ```
 
-Then to send a single test packet:
+Then to send a single test packet (on Linux):
 
 ```bash
-echo -n -e "" > /dev/udp/
+echo -n -e "AC\x00\x12\x00\x13\x01\x01ZA" > /dev/udp/${LOCATION_EXAMPLE_DOMAIN}/${LOCATION_EXAMPLE_PORT}
 ```
 
 To remove the example stack:
