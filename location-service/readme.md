@@ -33,7 +33,7 @@ clients-->listener-->destination-->tracker
 To deploy the template for the first time:
 
 ```bash
-sam build & same deploy --stack-name location-example --guided
+sam build & sam deploy --stack-name location-example --guided
 ```
 
 Once deployed, updates to the stack can omit `--guided` if the `samconfig.toml` file was saved.  
