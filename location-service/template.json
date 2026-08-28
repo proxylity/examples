@@ -1,0 +1,195 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Example template for using UDP Gateway with AWS Location Service to track device locations with no code (direct integration). Your AWS account must be subscribed to Proxylity UDP Gateway to successfully deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describine which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Logs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/proxylity/location-service-example-${AWS::StackName}"
+        },
+        "RetentionInDays": 7
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "Tracker": {
+      "Type": "AWS::Location::Tracker",
+      "Properties": {
+        "TrackerName": {
+          "Fn::Sub": "location-service-example-${AWS::StackName}"
+        },
+        "Description": "Example tracker for UDP Gateway integration with AWS Location Service",
+        "PositionFiltering": "TimeBased"
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowTrackerUpdate",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Sfn",
+              "Effect": "Allow",
+              "Action": [
+                "geo:BatchUpdateDevicePosition"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "Tracker",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "Logs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": "*"
+            }
+          ]
+        },
+        "Roles": [
+          { "Ref": "DestinationRole" }
+        ]
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Delivers to the tracker; no response is generated.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 0.1
+            },
+            "EnableLogging": true,
+            "LogGroupName": {
+              "Ref": "Logs"
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Tracker",
+                "Arn"
+              ]
+            },
+            "Arguments": {
+              "DeviceIdExpression": "utf8[0:2]",
+              "LatitudeExpression": "i16le[2:4]",
+              "LongitudeExpression": "i16le[4:6]",
+              "PositionPropertyExpressions": {
+                "foo": "u16le[6:8]",
+                "bar": "utf8[8:10]"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    }
+  }
+}
