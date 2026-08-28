@@ -35,6 +35,7 @@ Whether you're building telemetry systems, real-time backends, enterprise servic
 * **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
 * **[Kinesis Data Streams](kinesis-streams)** - Directs UDP packets to Amazon Kinesis Data Streams with a dynamic partition key derived from the packet payload
 * **[EventBridge Integration](event-bridge)** - Event-driven UDP processing showcasing how to integrate UDP traffic with AWS's event backbone
+* **[Location Service](location-service)** - No-code device location tracking with UDP Gateway and AWS Location Service
 * **[MAVLink to FIFO SQS](mavlink-fifo)** - Delivers MAVLink v1 and v2 drone telemetry packets to a FIFO SQS queue, demonstrating message deduplication and ordered delivery
 * **[Multi-Region Packet Counter](packet-counter-multi-region)** - Demonstrates global UDP processing with region-specific routing and failover capabilities
 * **[Multi-Modal Workflows](multi-modal)** - Sophisticated example combining HTTP browser interactions with UDP processing and long-running tasks
