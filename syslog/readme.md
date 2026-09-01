@@ -121,19 +121,22 @@ After deployment, configure WireGuard on each site gateway using the listener en
 
 Create `/etc/wireguard/syslog.conf`:
 
-```ini
+```bash
+cat > syslog.conf << EOF
 [Interface]
-PrivateKey = <contents of site1.key>
-Address = 10.200.0.1/32
+PrivateKey = $(cat site1.key)
+Address = 10.10.10.20/32
 
 [Peer]
-PublicKey = <ListenerPublicKey from stack outputs>
-AllowedIPs = <ListenerTunnelIP>/32
-Endpoint = <Domain from stack outputs>:<Port from stack outputs>
+PublicKey = ${LISTENER_PUBLIC_KEY}
+Endpoint = ${SYSLOG_DOMAIN}:${SYSLOG_PORT}
+AllowedIPs = 10.200.0.1/32
 PersistentKeepalive = 25
+EOF
+sudo mv syslog.conf /etc/wireguard/
 ```
 
-> **Split tunnel:** `AllowedIPs` should be set to only the listener's tunnel IP (e.g. `10.200.0.2/32`), not `0.0.0.0/0`. Using `0.0.0.0/0` would route all gateway internet traffic through the WireGuard tunnel, breaking normal network operation. Only syslog traffic directed at the listener's tunnel IP needs to traverse the tunnel. The listener's tunnel IP is assigned by Proxylity and visible in the WireGuard handshake output (`sudo wg show`).
+> **Split tunnel:** `AllowedIPs` should be set to only the listener's tunnel IP (e.g. `10.200.0.1/32`), not `0.0.0.0/0`. Using `0.0.0.0/0` would route all gateway internet traffic through the WireGuard tunnel, breaking normal network operation. Only syslog traffic directed at the listener's tunnel IP needs to traverse the tunnel. The listener's tunnel IP is assigned by Proxylity and visible in the WireGuard handshake output (`sudo wg show`).
 
 Bring up the tunnel:
 
@@ -141,7 +144,13 @@ Bring up the tunnel:
 sudo wg-quick up syslog
 ```
 
-Then configure syslog forwarding. For rsyslog, add to `/etc/rsyslog.conf`:
+To send a single test syslog message directly to the listener:
+
+```bash
+logger -n 10.200.0.1 -P 514 -p local0.info "Direct network test log"
+```
+
+To send all system logs, configure syslog forwarding. For rsyslog, add to `/etc/rsyslog.conf`:
 
 ```
 *.* @<listener tunnel IP>:514
