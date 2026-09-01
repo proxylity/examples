@@ -1,0 +1,655 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "MAVLink drone fleet tracking with three composite destinations: AWS Location Service (GPS tracking), SQS FIFO with Lambda-to-AppSync Events (real-time browser map), and Firehose to S3 (packet archival). You must be subscribed to Proxylity UDP Gateway to deploy this template.",
+  "Parameters": {
+    "ClientCidrToAllow": {
+      "Description": "The CIDR describing which IP addresses should be allowed to use the listener. Default is open/everyone.",
+      "Type": "String",
+      "Default": "0.0.0.0/0"
+    }
+  },
+  "Mappings": {
+    "ProxylityConfig": {
+      "Fn::Transform": {
+        "Name": "AWS::Include",
+        "Parameters": {
+          "Location": {
+            "Fn::Sub": "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+          }
+        }
+      }
+    }
+  },
+  "Resources": {
+    "Tracker": {
+      "Type": "AWS::Location::Tracker",
+      "Properties": {
+        "TrackerName": {
+          "Fn::Sub": "${AWS::StackName}-tracker"
+        },
+        "Description": "Tracks drone fleet positions from MAVLink GPS_RAW_INT telemetry",
+        "PositionFiltering": "TimeBased"
+      }
+    },
+    "EventsApi": {
+      "Type": "AWS::AppSync::Api",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-drone-tracker"
+        },
+        "EventConfig": {
+          "AuthProviders": [
+            {
+              "AuthType": "API_KEY"
+            }
+          ],
+          "ConnectionAuthModes": [
+            {
+              "AuthType": "API_KEY"
+            }
+          ],
+          "DefaultPublishAuthModes": [
+            {
+              "AuthType": "API_KEY"
+            }
+          ],
+          "DefaultSubscribeAuthModes": [
+            {
+              "AuthType": "API_KEY"
+            }
+          ]
+        }
+      }
+    },
+    "EventsApiKey": {
+      "Type": "AWS::AppSync::ApiKey",
+      "Properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "EventsApi",
+            "ApiId"
+          ]
+        }
+      }
+    },
+    "DronesNamespace": {
+      "Type": "AWS::AppSync::ChannelNamespace",
+      "Properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "EventsApi",
+            "ApiId"
+          ]
+        },
+        "Name": "drones"
+      }
+    },
+    "FifoQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true,
+        "VisibilityTimeout": 60
+      }
+    },
+    "ArchiveBucket": {
+      "Type": "AWS::S3::Bucket"
+    },
+    "FirehoseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "FirehoseRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowFirehoseS3",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:PutObject",
+                "s3:GetBucketLocation"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "ArchiveBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${ArchiveBucket.Arn}/*"
+                }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "FirehoseRole"
+          }
+        ]
+      }
+    },
+    "DeliveryStream": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "DependsOn": "FirehoseRolePolicy",
+      "Properties": {
+        "DeliveryStreamType": "DirectPut",
+        "S3DestinationConfiguration": {
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "ArchiveBucket",
+              "Arn"
+            ]
+          },
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "FirehoseRole",
+              "Arn"
+            ]
+          },
+          "BufferingHints": {
+            "IntervalInSeconds": 60,
+            "SizeInMBs": 1
+          },
+          "Prefix": "mavlink/"
+        }
+      }
+    },
+    "Logs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/proxylity/mavlink-example-${AWS::StackName}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "DestinationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::FindInMap": [
+                    "ProxylityConfig",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    "ServiceRole"
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "DestinationRolePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowTrackerSqsFirehose",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "LocationTracker",
+              "Effect": "Allow",
+              "Action": [
+                "geo:BatchUpdateDevicePosition"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "Tracker",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "SqsFifo",
+              "Effect": "Allow",
+              "Action": [
+                "sqs:GetQueueUrl",
+                "sqs:SendMessage"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "FifoQueue",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "Firehose",
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeliveryStream",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "CloudWatchMetrics",
+              "Effect": "Allow",
+              "Action": [
+                "cloudwatch:PutMetricData"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "CloudWatchLogs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${Logs.Arn}:*"
+                }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "DestinationRole"
+          }
+        ]
+      }
+    },
+    "PacketProcessorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole"
+        ]
+      }
+    },
+    "PacketProcessorPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowAppSyncPublish",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AppSyncPublish",
+              "Effect": "Allow",
+              "Action": "appsync:EventPublish",
+              "Resource": {
+                "Fn::Sub": "arn:aws:appsync:${AWS::Region}:${AWS::AccountId}:apis/${EventsApi.ApiId}/*"
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "PacketProcessorRole"
+          }
+        ]
+      }
+    },
+    "PacketProcessorFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "python3.12",
+        "Handler": "packet_processor.handler",
+        "CodeUri": "src/packet-processor/",
+        "MemorySize": 256,
+        "Timeout": 10,
+        "Role": {
+          "Fn::GetAtt": [
+            "PacketProcessorRole",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "APPSYNC_HTTP_ENDPOINT": {
+              "Fn::GetAtt": [
+                "EventsApi",
+                "Dns.Http"
+              ]
+            },
+            "APPSYNC_API_KEY": {
+              "Fn::GetAtt": [
+                "EventsApiKey",
+                "ApiKey"
+              ]
+            },
+            "APPSYNC_CHANNEL": "/drones/positions"
+          }
+        },
+        "Events": {
+          "SqsTrigger": {
+            "Type": "SQS",
+            "Properties": {
+              "Queue": {
+                "Fn::GetAtt": [
+                  "FifoQueue",
+                  "Arn"
+                ]
+              },
+              "BatchSize": 10,
+              "FunctionResponseTypes": [
+                "ReportBatchItemFailures"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "UiHandlerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ]
+      }
+    },
+    "UiHandlerPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AllowTrackerRead",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "geo:ListDevicePositions"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "Tracker",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "UiHandlerRole"
+          }
+        ]
+      }
+    },
+    "UiHandlerFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "python3.12",
+        "Handler": "ui_handler.handler",
+        "CodeUri": "src/ui-handler/",
+        "MemorySize": 256,
+        "Timeout": 10,
+        "Role": {
+          "Fn::GetAtt": [
+            "UiHandlerRole",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "APPSYNC_REALTIME_HOST": {
+              "Fn::GetAtt": [
+                "EventsApi",
+                "Dns.Realtime"
+              ]
+            },
+            "APPSYNC_HTTP_HOST": {
+              "Fn::GetAtt": [
+                "EventsApi",
+                "Dns.Http"
+              ]
+            },
+            "APPSYNC_API_KEY": {
+              "Fn::GetAtt": [
+                "EventsApiKey",
+                "ApiKey"
+              ]
+            },
+            "APPSYNC_CHANNEL": "/drones/positions",
+            "TRACKER_NAME": {
+              "Fn::Sub": "${AWS::StackName}-tracker"
+            }
+          }
+        },
+        "FunctionUrlConfig": {
+          "AuthType": "NONE"
+        }
+      }
+    },
+    "UdpListener": {
+      "Type": "Custom::ProxylityUdpGatewayListener",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            {
+              "Ref": "AWS::Region"
+            },
+            "ServiceToken"
+          ]
+        },
+        "ApiKey": {
+          "Fn::FindInMap": [
+            "ProxylityConfig",
+            "Account",
+            "ApiKey"
+          ]
+        },
+        "Protocols": [
+          "udp"
+        ],
+        "ClientRestrictions": {
+          "Networks": [
+            {
+              "Ref": "ClientCidrToAllow"
+            }
+          ]
+        },
+        "Destinations": [
+          {
+            "Description": "Extracts GPS position and telemetry from MAVLink v2 GPS_RAW_INT packets and writes to the Location Service tracker. FilterExpression ensures only GPS_RAW_INT (msg 24) packets are delivered -- other message types are silently dropped.",
+            "FilterExpression": "[0] == 0xFD && [7] == 0x18 && [8] == 0x00 && [9] == 0x00 ?? 0x00",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 0.5
+            },
+            "EnableLogging": true,
+            "LogGroupName": {
+              "Ref": "Logs"
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "Tracker",
+                "Arn"
+              ]
+            },
+            "Arguments": {
+              "DeviceIdExpression": "[5:7]",
+              "LatitudeExpression": "i32le[18:22]",
+              "LongitudeExpression": "i32le[22:26]",
+              "ScaleFactor": 0.0000001,
+              "PositionPropertyExpressions": {
+                "alt_mm": "i32le[26:30]",
+                "vel_cms": "u16le[34:36]",
+                "satellites": "u8[39]"
+              }
+            }
+          },
+          {
+            "Description": "Delivers raw MAVLink packets to the FIFO queue with per-drone ordering. A Lambda function consumes the queue, decodes GPS_RAW_INT payloads, and publishes position events to AppSync Events for real-time browser display.",
+            "Arguments": {
+              "SendRaw": true,
+              "UseMessageAttributes": true,
+              "MessageGroupIdExpression": "[0] == 0xFE ? [3:5] : ([0] == 0xFD ? [5:7] : 0xFFFF)",
+              "MessageGroupIdFormatter": "hex"
+            },
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 10,
+              "TimeoutInSeconds": 1.0
+            },
+            "Formatter": "hex",
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "Logs"
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "FifoQueue",
+                "Arn"
+              ]
+            }
+          },
+          {
+            "Description": "Archives all raw MAVLink packets to S3 via Firehose for durable storage and batch processing.",
+            "Role": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DestinationRole",
+                  "Arn"
+                ]
+              }
+            },
+            "Batching": {
+              "Count": 100,
+              "TimeoutInSeconds": 1.0
+            },
+            "Formatter": "hex",
+            "MetricsEnabled": true,
+            "LogGroupName": {
+              "Ref": "Logs"
+            },
+            "DestinationArn": {
+              "Fn::GetAtt": [
+                "DeliveryStream",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Domain": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com"
+      }
+    },
+    "Port": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UdpListener",
+          "Port"
+        ]
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::Sub": "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+      }
+    },
+    "TrackerName": {
+      "Value": {
+        "Fn::Sub": "${AWS::StackName}-tracker"
+      }
+    },
+    "FifoQueueUrl": {
+      "Value": {
+        "Ref": "FifoQueue"
+      }
+    },
+    "LiveUiUrl": {
+      "Value": {
+        "Fn::GetAtt": [
+          "UiHandlerFunctionUrl",
+          "FunctionUrl"
+        ]
+      }
+    },
+    "ArchiveBucket": {
+      "Value": {
+        "Ref": "ArchiveBucket"
+      }
+    }
+  }
+}
