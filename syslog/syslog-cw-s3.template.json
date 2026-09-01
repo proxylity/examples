@@ -506,56 +506,62 @@
               "Action": "sts:AssumeRole"
             }
           ]
-        },
-        "Policies": [
+        }
+      }
+    },
+    "DestinationPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "ProxylityExecutionPolicy",
+        "Roles": [
           {
-            "PolicyName": "ProxylityExecutionPolicy",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
+            "Ref": "DestinationRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Firehose",
+              "Effect": "Allow",
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Resource": [
                 {
-                  "Sid": "Firehose",
-                  "Effect": "Allow",
-                  "Action": [
-                    "firehose:PutRecord",
-                    "firehose:PutRecordBatch"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::GetAtt": [
-                        "Firehose",
-                        "Arn"
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "Sid": "CloudWatch",
-                  "Effect": "Allow",
-                  "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                  ],
-                  "Resource": [
-                    {
-                      "Fn::Sub": "${Logs.Arn}"
-                    },
-                    {
-                      "Fn::Sub": "${Logs.Arn}/*"
-                    },
-                    {
-                      "Fn::Sub": "${DestinationErrorLogs.Arn}"
-                    },
-                    {
-                      "Fn::Sub": "${DestinationErrorLogs.Arn}/*"
-                    }
+                  "Fn::GetAtt": [
+                    "Firehose",
+                    "Arn"
                   ]
                 }
               ]
+            },
+            {
+              "Sid": "CloudWatch",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${Logs.Arn}"
+                },
+                {
+                  "Fn::Sub": "${Logs.Arn}/*"
+                },
+                {
+                  "Fn::Sub": "${DestinationErrorLogs.Arn}"
+                },
+                {
+                  "Fn::Sub": "${DestinationErrorLogs.Arn}/*"
+                }
+              ]
             }
-          }
-        ]
+          ]
+        }
       }
     },
     "SyslogListener": {
