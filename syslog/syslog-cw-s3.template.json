@@ -280,7 +280,7 @@
               }
             }
           },
-          "CompressionFormat": "UNCOMPRESSED",
+          "CompressionFormat": "GZIP",
           "Prefix": "syslog/",
           "RoleARN": {
             "Fn::GetAtt": [
@@ -611,6 +611,7 @@
                 ]
               }
             },
+            "Formatter": "utf8",
             "Batching": {
               "Count": 1000,
               "TimeoutInSeconds": 30
