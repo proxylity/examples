@@ -21,11 +21,11 @@ export DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
 # The name of the stack to deploy.
 export STACK_NAME="${STACK_NAME:-radius}"
 
-# The transport protocol to use for the RADIUS listeners. Valid values are `UDP` and 
-# `WireGuard`. The default is `WireGuard`, which is the recommended and more secure 
-# option. If you choose `UDP`, the templates will deploy standard UDP-based RADIUS 
-# listeners instead of WireGuard-based listeners, and the `PEER_PUBLIC_KEY` environment 
-# variable will be ignored.
+# The transport protocol to use for the RADIUS listeners. Valid values are `UDP`,
+# `DTLS`, and `WireGuard`. The client or NAS must support the selected transport;
+# changing this setting does not wrap plaintext RADIUS traffic automatically. The
+# bundled radius-client simulator currently supports WireGuard only. `PEER_PUBLIC_KEY`
+# is ignored unless WireGuard is selected.
 export TRANSPORT="${TRANSPORT:-WireGuard}"
 
 # The public key for the WireGuard peer that will connect to the RADIUS authentication 

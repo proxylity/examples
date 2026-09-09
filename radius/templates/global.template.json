@@ -9,7 +9,7 @@
       "Default": "0.0.0.0/0"
     },
     "FirstPeerPublicKey": {
-      "Description": "The public key of the first peer RADIUS client (authenticator) that will connect to the RADIUS authentication listener. 32 bytes, base64 encocded. Not required when Transport is UDP.",
+      "Description": "The public key of the first peer RADIUS client (authenticator) that will connect to the RADIUS authentication listener. 32 bytes, base64 encoded. Used only when Transport is WireGuard.",
       "Type": "String",
       "Default": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
       "MinLength": 44,
@@ -20,7 +20,11 @@
       "Description": "The transport protocol to use for the RADIUS listeners.",
       "Type": "String",
       "Default": "WireGuard",
-      "AllowedValues": [ "WireGuard", "UDP" ]
+      "AllowedValues": [
+        "DTLS",
+        "WireGuard",
+        "UDP"
+      ]
     }
   },
   "Mappings": {
@@ -36,7 +40,22 @@
     }
   },
   "Conditions": {
-    "CreateWireGuardListener": { "Fn::Equals": [ { "Ref": "Transport" }, "WireGuard" ] }
+    "CreateWireGuardListener": {
+      "Fn::Equals": [
+        {
+          "Ref": "Transport"
+        },
+        "WireGuard"
+      ]
+    },
+    "CreateDtlsListener": {
+      "Fn::Equals": [
+        {
+          "Ref": "Transport"
+        },
+        "DTLS"
+      ]
+    }
   },
   "Resources": {
     "ProxylityRole": {
@@ -87,12 +106,18 @@
                 "logs:PutLogEvents"
               ],
               "Resource": [
-                { "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/radius/*:*" }
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/radius/*:*"
+                }
               ]
             }
           ]
         },
-        "Roles": [ { "Ref": "ProxylityRole" } ]
+        "Roles": [
+          {
+            "Ref": "ProxylityRole"
+          }
+        ]
       }
     },
     "RadiusAuthListener": {
@@ -119,19 +144,50 @@
         },
         "Description": "RADIUS authentication listener.",
         "Protocols": {
-          "Fn::If": [ "CreateWireGuardListener", [ "wg" ], [ "udp" ] ]
+          "Fn::If": [
+            "CreateDtlsListener",
+            [
+              "dtls"
+            ],
+            {
+              "Fn::If": [
+                "CreateWireGuardListener",
+                [
+                  "wg"
+                ],
+                [
+                  "udp"
+                ]
+              ]
+            }
+          ]
         },
-        "DecapsulatedDelivery": true,
+        "DecapsulatedDelivery": {
+          "Fn::If": [
+            "CreateWireGuardListener",
+            true,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
         "Peers": {
           "Fn::If": [
             "CreateWireGuardListener",
             [
               {
-                "PublicKey": { "Ref": "FirstPeerPublicKey" },
-                "AllowedIPs": [ "0.0.0.0/0", "::/0" ]
+                "PublicKey": {
+                  "Ref": "FirstPeerPublicKey"
+                },
+                "AllowedIPs": [
+                  "0.0.0.0/0",
+                  "::/0"
+                ]
               }
             ],
-            { "Ref": "AWS::NoValue" }
+            {
+              "Ref": "AWS::NoValue"
+            }
           ]
         },
         "ClientRestrictions": {
@@ -209,19 +265,50 @@
         },
         "Description": "RADIUS accounting listener.",
         "Protocols": {
-          "Fn::If": [ "CreateWireGuardListener", [ "wg" ], [ "udp" ] ]
+          "Fn::If": [
+            "CreateDtlsListener",
+            [
+              "dtls"
+            ],
+            {
+              "Fn::If": [
+                "CreateWireGuardListener",
+                [
+                  "wg"
+                ],
+                [
+                  "udp"
+                ]
+              ]
+            }
+          ]
         },
-        "DecapsulatedDelivery": true,
+        "DecapsulatedDelivery": {
+          "Fn::If": [
+            "CreateWireGuardListener",
+            true,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
         "Peers": {
           "Fn::If": [
             "CreateWireGuardListener",
             [
               {
-                "PublicKey": { "Ref": "FirstPeerPublicKey" },
-                "AllowedIPs": [ "0.0.0.0/0", "::/0" ]
+                "PublicKey": {
+                  "Ref": "FirstPeerPublicKey"
+                },
+                "AllowedIPs": [
+                  "0.0.0.0/0",
+                  "::/0"
+                ]
               }
             ],
-            { "Ref": "AWS::NoValue" }
+            {
+              "Ref": "AWS::NoValue"
+            }
           ]
         },
         "ClientRestrictions": {
@@ -432,7 +519,11 @@
             }
           ]
         },
-        "Roles": [ { "Ref": "StepFunctionsExecutionRole" } ]
+        "Roles": [
+          {
+            "Ref": "StepFunctionsExecutionRole"
+          }
+        ]
       }
     },
     "EventBridgeRole": {
@@ -477,14 +568,40 @@
       "Description": "WireGuard public key of the RADIUS authentication listener -- configure as the peer PublicKey in your WireGuard client",
       "Condition": "CreateWireGuardListener",
       "Value": {
-        "Fn::GetAtt": [ "RadiusAuthListener", "WireGuardPublicKey" ]
+        "Fn::GetAtt": [
+          "RadiusAuthListener",
+          "WireGuardPublicKey"
+        ]
       }
     },
     "AcctListenerWireGuardPublicKey": {
       "Description": "WireGuard public key of the RADIUS accounting listener -- configure as the peer PublicKey in your WireGuard client",
       "Condition": "CreateWireGuardListener",
       "Value": {
-        "Fn::GetAtt": [ "RadiusAcctListener", "WireGuardPublicKey" ]
+        "Fn::GetAtt": [
+          "RadiusAcctListener",
+          "WireGuardPublicKey"
+        ]
+      }
+    },
+    "AuthListenerDtlsServerCertificate": {
+      "Description": "PEM-encoded certificate presented by the RADIUS authentication DTLS listener",
+      "Condition": "CreateDtlsListener",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAuthListener",
+          "DtlsServerCertificate"
+        ]
+      }
+    },
+    "AcctListenerDtlsServerCertificate": {
+      "Description": "PEM-encoded certificate presented by the RADIUS accounting DTLS listener",
+      "Condition": "CreateDtlsListener",
+      "Value": {
+        "Fn::GetAtt": [
+          "RadiusAcctListener",
+          "DtlsServerCertificate"
+        ]
       }
     },
     "RadiusAcctFirehoseRoleArn": {
