@@ -110,7 +110,6 @@
       "Properties": {
         "ServiceToken": { "Fn::FindInMap": [ "ProxylityConfig", { "Ref": "AWS::Region" }, "ServiceToken" ] },
         "ApiKey": { "Fn::FindInMap": [ "ProxylityConfig", "Account", "ApiKey" ] },
-        "Enabled": true,
         "ListenerName": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "ListenerId" ] },
         "SnsTopicSource": {
           "Role": { "Fn::FindInMap": [ "GlobalStack", "Outputs", "DestinationRoleArn" ] },
