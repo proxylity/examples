@@ -362,16 +362,22 @@
             {
               "Effect": "Allow",
               "Action": [
-                "logs:CreateLogGroup",
                 "logs:CreateLogStream",
                 "logs:PutLogEvents"
               ],
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeliveryLogs}:*"
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "logs:CreateLogGroup",
               "Resource": [
                 {
-                  "Fn::Sub": "${DeliveryLogs.Arn}"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeliveryLogs}"
                 },
                 {
-                  "Fn::Sub": "${DeliveryLogs.Arn}/*"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeliveryLogs}:*"
                 }
               ]
             }
@@ -538,25 +544,39 @@
               ]
             },
             {
-              "Sid": "CloudWatch",
+              "Sid": "CloudWatchLogStreams",
               "Effect": "Allow",
               "Action": [
-                "logs:CreateLogGroup",
                 "logs:CreateLogStream",
                 "logs:PutLogEvents"
               ],
               "Resource": [
                 {
-                  "Fn::Sub": "${Logs.Arn}"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${Logs}:*"
                 },
                 {
-                  "Fn::Sub": "${Logs.Arn}/*"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DestinationErrorLogs}:*"
+                }
+              ]
+            },
+            {
+              "Sid": "CloudWatchLogGroups",
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${Logs}"
                 },
                 {
-                  "Fn::Sub": "${DestinationErrorLogs.Arn}"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DestinationErrorLogs}"
                 },
                 {
-                  "Fn::Sub": "${DestinationErrorLogs.Arn}/*"
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${Logs}:*"
+                },
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DestinationErrorLogs}:*"
                 }
               ]
             }
