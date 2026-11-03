@@ -304,13 +304,13 @@
                             "TableName": "${RADIUS_AUTH_STATE_TABLE}",
                             "Item": {
                                 "PK": {
-                                    "S": "{% 'SESSION#' & $session_id %}"
+                                    "S": "{% 'USER#' & $user_name %}"
                                 },
                                 "SK": {
-                                    "S": "{% '' & $fromMillis($millis() + $session_duration * 1000) %}"
+                                    "S": "{% 'SESSION#' & $session_id %}"
                                 },
                                 "TTL": {
-                                    "N": "{% '' & ($millis()/1000 + (24 * 60 * 60)) %}"
+                                    "N": "{% '' & ($millis()/1000 + $session_duration + (24 * 60 * 60)) %}"
                                 },
                                 "authenticated_at": {
                                     "S": "{% $states.context.State.EnteredTime %}"
