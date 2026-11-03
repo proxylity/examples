@@ -37,9 +37,6 @@ Globals:
     Timeout: 10
 
 Resources:
-
-  # ── AppSync Events API ────────────────────────────────────────────────────────
-
   PacketCaptureApi:
     Type: AWS::AppSync::Api
     Properties:
@@ -65,8 +62,6 @@ Resources:
       ApiId: !GetAtt PacketCaptureApi.ApiId
       Name: packets
 
-  # ── SQS queue (Proxylity writes here) ────────────────────────────────────────
-
   PacketQueue:
     Type: AWS::SQS::Queue
     DeletionPolicy: Delete
@@ -82,8 +77,6 @@ Resources:
     Properties:
       LogGroupName: !Sub "/proxylity/udp-listeners/${AWS::StackName}"
       RetentionInDays: 7
-
-  # ── IAM role that allows Proxylity to enqueue packets ─────────────────────────
 
   DestinationRole:
     Type: AWS::IAM::Role
@@ -122,8 +115,6 @@ Resources:
               - logs:PutLogEvents
             Resource: !Sub "${PacketQueueLogs.Arn}:*"
 
-  # ── Plain UDP listener ────────────────────────────────────────────────────────
-
   UdpListener:
     Type: Custom::ProxylityUdpGatewayListener
     Properties:
@@ -144,8 +135,6 @@ Resources:
           MetricsEnabled: true
           LogGroupName: !Ref PacketQueueLogs
           DestinationArn: !GetAtt PacketQueue.Arn
-
-  # ── WireGuard listener (optional) ─────────────────────────────────────────────
 
   WireGuardListener:
     Type: Custom::ProxylityUdpGatewayListener
@@ -174,7 +163,6 @@ Resources:
           LogGroupName: !Ref PacketQueueLogs
           DestinationArn: !GetAtt PacketQueue.Arn
 
-  # ── PacketProcessor Lambda ────────────────────────────────────────────────────
   # Triggered by SQS; parses each packet and publishes metadata to AppSync Events.
 
   PacketProcessorRole:
@@ -227,7 +215,6 @@ Resources:
     Metadata:
       BuildMethod: makefile
 
-  # ── UiHandler Lambda ─────────────────────────────────────────────────────────
   # Serves the single-page capture UI via a public Lambda URL.
 
   UiHandlerRole:
