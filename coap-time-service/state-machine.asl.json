@@ -15,14 +15,19 @@
                 "States": {
                     "Parse CoAP Data": {
                         "Type": "Pass",
-                        "Comment": "Deserialise the stringified CoAP JSON into a structured field so downstream states can reference properties directly. Also pre-computes ClientEndpoint (IP:Port string) once so DynamoDB states don't repeat the expression.",
-                        "Output": "{% $merge([$states.input, {\"Coap\": $parse($states.input.Data), \"ClientEndpoint\": $states.input.Remote.IpAddress & \":\" & $string($states.input.Remote.Port)}]) %}",
+                        "Comment": "Alias the decoded CoAP message (Data is a JSON object with the coap formatter) as Coap, and pre-compute ClientEndpoint (IP:Port string) once so DynamoDB states don't repeat the expression.",
+                        "Output": "{% $merge([$states.input, {\"Coap\": $states.input.Data, \"ClientEndpoint\": $states.input.Remote.IpAddress & \":\" & $string($states.input.Remote.Port)}]) %}",
                         "Next": "Route by Type"
                     },
                     "Route by Type": {
                         "Type": "Choice",
-                        "Comment": "Dispatch ACK and RST before path routing. NON-based Observe notifications do not require ACK tracking, so Type=2 is silently discarded. RST indicates the client is cancelling an Observe or rejecting a CON (RFC 7252 §4.5).",
+                        "Comment": "Drop malformed messages, then dispatch ACK and RST before path routing. NON-based Observe notifications do not require ACK tracking, so Type=2 is silently discarded. RST indicates the client is cancelling an Observe or rejecting a CON (RFC 7252 §4.5).",
                         "Choices": [
+                            {
+                                "Condition": "{% $exists($states.input.Coap.Error) %}",
+                                "Next": "No Reply (Malformed)",
+                                "Comment": "Not valid CoAP: Proxylity delivers {Error, Raw} and reports a destination error"
+                            },
                             {
                                 "Condition": "{% $states.input.Coap.Type = 3 %}",
                                 "Next": "Check RST Token",
@@ -35,6 +40,11 @@
                             }
                         ],
                         "Default": "Route by Path"
+                    },
+                    "No Reply (Malformed)": {
+                        "Type": "Pass",
+                        "Output": "{% null %}",
+                        "End": true
                     },
                     "No Reply (Client ACK)": {
                         "Type": "Pass",
@@ -189,23 +199,23 @@
                     "Respond With Discovery": {
                         "Type": "Pass",
                         "Comment": "RFC 6690 CoRE Link Format — advertises the /time resource.",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"KA==\"}\n        ],\n        \"Payload\": $base64encode(\"</time>;rt=\\\"time\\\";if=\\\"clock\\\";ct=0;obs\")\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": {\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12, \"Value\": \"KA==\"}\n        ],\n        \"Payload\": $base64encode(\"</time>;rt=\\\"time\\\";if=\\\"clock\\\";ct=0;obs\")\n    }\n} %}",
                         "End": true
                     },
                     "Respond With Time Observed": {
                         "Type": "Pass",
                         "Comment": "Registration confirmation (RFC 7641 §3.1) — identical to a plain time response but carries Option 6 (Observe=0) to confirm the subscription and Option 14 (Max-Age=60) to tell the client when to re-register.",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 6 },\n            {\"Number\": 12 },\n            {\"Number\": 14, \"Value\": \"PA==\"}\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": {\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 6 },\n            {\"Number\": 12 },\n            {\"Number\": 14, \"Value\": \"PA==\"}\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    }\n} %}",
                         "End": true
                     },
                     "Respond With Time": {
                         "Type": "Pass",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12 },\n            {\"Number\": 14 }\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": {\n        \"Type\": 2,\n        \"Code\": \"2.05\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Options\": [\n            {\"Number\": 12 },\n            {\"Number\": 14 }\n        ],\n        \"Payload\": $base64encode($states.context.Execution.StartTime)\n    }\n} %}",
                         "End": true
                     },
                     "Respond With Not Found": {
                         "Type": "Pass",
-                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": $string({\n        \"Type\": 2,\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    })\n} %}",
+                        "Output": "{% {\n    \"Tag\": $states.input.Tag,\n    \"Data\": {\n        \"Type\": 2,\n        \"Code\": \"4.04\",\n        \"MessageId\": $states.input.Coap.MessageId,\n        \"Token\": $states.input.Coap.Token,\n        \"Payload\": $base64encode(\"Not Found\")\n    }\n} %}",
                         "End": true
                     },
                     "No Reply (RST)": {

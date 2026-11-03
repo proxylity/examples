@@ -108,18 +108,13 @@ public sealed class Function
 
     private async Task<ResponsePacket?> ProcessMessageAsync(RequestPacket message, ILambdaContext context)
     {
-        CoapRequest? request;
-        try
+        var request = message.Data;
+        if (request.Error is not null)
         {
-            request = JsonSerializer.Deserialize(message.Data, CoapJsonContext.Default.CoapRequest);
-        }
-        catch (Exception ex)
-        {
-            context.Logger.LogWarning($"Failed to parse CoAP request: {ex.Message}");
+            // Not valid CoAP. UDP Gateway also reports this as a destination error.
+            context.Logger.LogWarning($"Dropping malformed CoAP packet: {request.Error}");
             return null;
         }
-
-        if (request is null) return null;
 
         // Bookkeeping messages (RFC 7252 §4.2/§4.5) never receive a reply.
         if (request.Type == CoapTypes.Acknowledgement)
@@ -169,7 +164,7 @@ public sealed class Function
         return new ResponsePacket
         {
             Tag = message.Tag,
-            Data = JsonSerializer.Serialize(response, CoapJsonContext.Default.CoapResponse),
+            Data = response,
         };
     }
 

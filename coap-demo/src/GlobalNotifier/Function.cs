@@ -131,7 +131,7 @@ public sealed class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationServi
                 {
                     Remote = new OutboundRemote { Address = subscription.Address, Port = subscription.Port },
                     Formatter = "coap",
-                    Data = JsonSerializer.Serialize(response, CoapJsonContext.Default.CoapResponse),
+                    Data = response,
                 }
             ]
         };

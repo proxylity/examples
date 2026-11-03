@@ -13,8 +13,8 @@ public sealed class RequestPacket
     public required string Tag { get; set; }
     public required ProxylityRemote Remote { get; set; }
 
-    /// <summary>Stringified JSON of a <see cref="CoapRequest"/>, produced by the "coap" formatter.</summary>
-    public required string Data { get; set; }
+    /// <summary>The decoded CoAP message, produced by the "coap" formatter.</summary>
+    public required CoapRequest Data { get; set; }
 }
 
 /// <summary>Envelope UDP Gateway sends to a Lambda Destination.</summary>
@@ -28,8 +28,8 @@ public sealed class ResponsePacket
 {
     public required string Tag { get; set; }
 
-    /// <summary>Stringified JSON of a <see cref="CoapResponse"/>. Omit to send no reply for that message.</summary>
-    public string? Data { get; set; }
+    /// <summary>The CoAP response to encode. Omit to send no reply for that message.</summary>
+    public CoapResponse? Data { get; set; }
 }
 
 /// <summary>Envelope a Lambda Destination returns to UDP Gateway.</summary>
@@ -51,8 +51,8 @@ public sealed class OutboundMessage
     public required OutboundRemote Remote { get; set; }
     public required string Formatter { get; set; }
 
-    /// <summary>Stringified JSON of a <see cref="CoapResponse"/>.</summary>
-    public required string Data { get; set; }
+    /// <summary>The CoAP message to encode and send.</summary>
+    public required CoapResponse Data { get; set; }
 }
 
 /// <summary>Envelope published to a Proxylity Packet Source SNS topic.</summary>

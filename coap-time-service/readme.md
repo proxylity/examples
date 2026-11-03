@@ -30,7 +30,17 @@ Proxylity's `coap` formatter decodes each inbound binary UDP packet into a JSON 
     {
       "Tag": "abc123",
       "Remote": { "IpAddress": "203.0.113.5", "Port": 12345 },
-      "Data": "{\"Version\":1,\"Type\":0,\"Code\":1,\"MessageId\":4711,\"Token\":\"AQID\",\"Method\":\"GET\",\"Path\":\"/time\",\"Options\":[{\"Number\":11,\"Value\":\"dGltZQ==\"}]}"
+      "Formatter": "coap",
+      "Data": {
+        "Version": 1,
+        "Type": 0,
+        "Code": 1,
+        "MessageId": 4711,
+        "Token": "AQID",
+        "Options": [ { "Number": 11, "Value": "dGltZQ==" } ],
+        "Method": "GET",
+        "Path": "/time"
+      }
     }
   ]
 }
@@ -38,6 +48,7 @@ Proxylity's `coap` formatter decodes each inbound binary UDP packet into a JSON 
 
 The state machine evaluates each decoded message's `Type` first, then dispatches by `Path`:
 
+- A packet that is not valid CoAP arrives as `{"Error": "...", "Raw": "..."}` (and is reported as a destination error) → silently discarded.
 - `Type = 2` (ACK) → silently discarded; acknowledgements of outbound NON notifications require no action.
 - `Type = 3` (RST) → removes the matching Observe subscription from DynamoDB (identified by `ClientEndpoint` + `Token`), then discards.
 - `Path = "/.well-known/core"` → RFC 6690 resource discovery; replies with `2.05 Content` and a CoRE Link Format payload advertising the `/time` resource and its `obs` attribute.
@@ -47,7 +58,7 @@ The state machine evaluates each decoded message's `Type` first, then dispatches
 - Any other path, CON → `4.04 Not Found` ACK (RFC 7252 §4.2 — all Confirmable messages must be acknowledged).
 - Any other path, NON → no reply (fire-and-forget; silence is correct per RFC 7252).
 
-The reply `Data` is a stringified JSON object that Proxylity's `coap` formatter re-encodes into a valid binary CoAP response before sending it back to the client:
+The reply `Data` is a JSON object that Proxylity's `coap` formatter encodes into a valid binary CoAP response before sending it back to the client:
 
 ```jsonc
 // CoAP response produced for GET /time
@@ -145,8 +156,9 @@ The state machine (`state-machine.asl.json`) uses a **Map** state to process eac
 
 ```
 Process Messages (Map)
-  └─ Parse CoAP Data (Pass)           → deserialise Data→.Coap; compute ClientEndpoint
+  └─ Parse CoAP Data (Pass)           → alias Data as .Coap; compute ClientEndpoint
      └─ Route by Type (Choice)
+        ├─ Coap.Error present          → No Reply (Malformed)
         ├─ Type 3 (RST)
         │   └─ Check RST Token (Choice)
         │       ├─ Token present       → Handle RST (Task)       → No Reply (RST)
@@ -168,15 +180,15 @@ Collect Replies (Pass)                → filter nulls, wrap {"Replies": [...]}
 
 ### Parse CoAP Data
 
-The `Data` field arrives as a stringified JSON string. This state uses JSONata's `$parse()` to deserialise it into a structured `.Coap` property so all downstream states can reference fields like `.Coap.Path` and `.Coap.Type` directly. It also pre-computes `ClientEndpoint` (an `IP:Port` string) once so the DynamoDB Task states do not repeat that expression.
+With the `coap` formatter, the `Data` field arrives as a JSON object. This state copies it to a `.Coap` property so all downstream states can reference fields like `.Coap.Path` and `.Coap.Type` directly. It also pre-computes `ClientEndpoint` (an `IP:Port` string) once so the DynamoDB Task states do not repeat that expression.
 
 ### Route by Type
 
-The first `Choice` state handles CoAP message-type bookkeeping before any path routing. Inbound ACK messages are acknowledgements of our outbound NON notifications and need no action. RST messages signal that a client is cancelling an Observe subscription or rejecting a CON — they are routed into the RST sub-flow. All other types (CON and NON requests) fall through to path routing.
+The first `Choice` state drops packets that are not valid CoAP, then handles CoAP message-type bookkeeping before any path routing. Inbound ACK messages are acknowledgements of our outbound NON notifications and need no action. RST messages signal that a client is cancelling an Observe subscription or rejecting a CON — they are routed into the RST sub-flow. All other types (CON and NON requests) fall through to path routing.
 
 | Condition | Next state |
 |---|---|
-| `Coap.Type = 3` (RST) | Check RST Token |
+| `Coap.Error` exists (malformed) | No Reply (Malformed) |
 | `Coap.Type = 2` (ACK) | No Reply (Client ACK) |
 | _(default)_ | Route by Path |
 

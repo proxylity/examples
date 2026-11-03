@@ -70,7 +70,7 @@ public sealed class Function(IAmazonSimpleNotificationService sns)
                 {
                     Remote = new OutboundRemote { Address = schedule.ClientAddress, Port = schedule.ClientPort },
                     Formatter = "coap",
-                    Data = JsonSerializer.Serialize(response, CoapJsonContext.Default.CoapResponse),
+                    Data = response,
                 }
             ]
         };

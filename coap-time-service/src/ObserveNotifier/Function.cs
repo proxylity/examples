@@ -121,12 +121,10 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
             return Convert.ToBase64String(((ReadOnlySpan<byte>)buf).TrimStart((byte)0));
         }
 
-        // Build the CoAP NON (Type=1) 2.05 Content notification.
-        // The Data string mirrors the JSON format that the Proxylity CoAP formatter
-        // accepts for outbound packets — the same structure the state machine produces
-        // for inbound request responses.
-        var coapJson = JsonSerializer.Serialize(
-            new CoapMessage(
+        // Build the CoAP NON (Type=1) 2.05 Content notification. With the coap formatter,
+        // Data is this object itself — the same structure the state machine produces for
+        // inbound request responses.
+        var notification = new CoapMessage(
                 Type:      1,       // NON — no ACK expected; subscribers re-register to prove liveness
                 Code:      "2.05",
                 MessageId: messageId,
@@ -137,8 +135,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
                     new CoapOption(Number: 14, Value: CoapUIntBase64(60))          // Max-Age = 60 s
                 ],
                 Payload: Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(currentTime))
-            ),
-            JsonContext.Default.CoapMessage);
+            );
 
         var envelope = JsonSerializer.Serialize(
             new ProxylityResponse(Messages: [
@@ -149,7 +146,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonSimpleNotificationService sns)
                         PeerKey: record.Remote.PeerKey),
                     Inner: record.Inner,
                     Formatter: "coap",
-                    Data: coapJson)
+                    Data: notification)
             ]),
             JsonContext.Default.ProxylityResponse);
 
@@ -198,7 +195,7 @@ public record CoapMessage(int Type, string Code, int MessageId, string Token,
 public record ProxylityRemote(string Address, int Port, string PeerKey);
 
 /// <summary>Single message in a Proxylity reply batch.</summary>
-public record ProxylityReplyMessage(ProxylityRemote Remote, InnerInfo? Inner, string Formatter, string Data);
+public record ProxylityReplyMessage(ProxylityRemote Remote, InnerInfo? Inner, string Formatter, CoapMessage Data);
 
 /// <summary>Envelope published to the Proxylity PacketSource SNS topic.</summary>
 public record ProxylityResponse(List<ProxylityReplyMessage> Messages);

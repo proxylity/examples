@@ -33,6 +33,10 @@ public sealed class CoapRequest
     public string? Path { get; set; }
     public List<CoapOption>? Options { get; set; }
     public string? Payload { get; set; }
+
+    /// <summary>Set (with <see cref="Raw"/>) instead of the fields above when the packet is not valid CoAP.</summary>
+    public string? Error { get; set; }
+    public string? Raw { get; set; }
 }
 
 /// <summary>
