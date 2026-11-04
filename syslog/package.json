@@ -1,0 +1,23 @@
+{
+  "name": "proxylity-syslog-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-site syslog collection over WireGuard with Proxylity UDP Gateway (AWS CDK).",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "@proxylity/cdk-udp-gateway": "0.2.3",
+    "aws-cdk-lib": "2.275.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "aws-cdk": "2.1147.0",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  }
+}

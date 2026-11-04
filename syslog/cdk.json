@@ -1,0 +1,11 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/syslog.ts",
+  "watch": {
+    "include": ["bin/**", "lib/**", "*.json"],
+    "exclude": ["node_modules", "cdk.out", "package*.json", "tsconfig.json", "cdk.json"]
+  },
+  "context": {
+    "stackName": "syslog",
+    "configDir": "."
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "Peers": [
+    {
+      "Name": "site-1",
+      "PublicKey": "REPLACE-WITH-SITE-1-PUBLIC-KEY",
+      "AllowedIPs": [
+        "10.1.0.0/16"
+      ]
+    }
+  ]
+}

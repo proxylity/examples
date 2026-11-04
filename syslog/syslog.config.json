@@ -1,0 +1,39 @@
+{
+  "Network": {
+    "ClientCidrs": [
+      "REPLACE-WITH-SITE-1-PUBLIC-CIDR"
+    ],
+    "CollectorAddress": "10.255.0.1"
+  },
+  "Retention": {
+    "LogGroupDays": 30,
+    "ArchiveDays": 365,
+    "ArchiveLockMode": "GOVERNANCE",
+    "ArchiveGlacierIrDays": 30,
+    "AnalyticsDays": 365,
+    "AnalyticsGlacierIrDays": 0,
+    "AthenaResultsDays": 7,
+    "KeyRotationDays": 365
+  },
+  "Alarms": {
+    "Email": "",
+    "PipelineSilenceSeconds": 3600,
+    "SiteSilenceSeconds": 3600,
+    "FreshnessSeconds": 900
+  },
+  "Ingest": {
+    "LogsFilterExpression": ""
+  },
+  "Security": {
+    "GovernanceBypassPrincipalArn": "",
+    "KeyAdminPrincipalArns": [],
+    "ReplicaBucketArn": "",
+    "ReplicaKmsKeyArn": ""
+  },
+  "Siem": {
+    "HecEndpoint": "",
+    "HecEndpointType": "Event",
+    "HecTokenSecretArn": "",
+    "SubscriptionFilterPattern": ""
+  }
+}
