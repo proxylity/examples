@@ -30,7 +30,7 @@ Whether you're building telemetry systems, real-time backends, enterprise servic
 ## Example Solutions
 
 * **[UDP Packet Counter](packet-counter)** - An introductory example implemented in Lambda, with a [Step Functions variant](packet-counter-sfn). Also available in [Go](packet-counter-go), [C++](packet-counter-cpp), and [Python](packet-counter-python)
-* **[Syslog to Cloud](syslog)** - Multi-site syslog over WireGuard, parsed by the `syslog` formatter into an Object Lock archive, CloudWatch Logs with alarms and a dashboard, and Parquet for Athena, with optional Splunk forwarding. Deployed with the Proxylity CDK constructs, with no code running in AWS
+* **[Syslog to Cloud](https://github.com/proxylity/syslog)** - Multi-site syslog over WireGuard, parsed by the `syslog` formatter into an Object Lock archive, CloudWatch Logs with alarms and a dashboard, and Parquet for Athena, with optional Splunk forwarding. Deployed with the Proxylity CDK constructs, with no code running in AWS. Now in its own repository.
 * **[Packet Capture](packet-capture)** - Live, browser-based UDP packet capture with real-time display via AppSync Events. Supports plain UDP and WireGuard ingress with no persistent storage. A [deployment walkthrough](https://youtu.be/BUfWxlaHTWo) is available on YouTube.
 * **[SQS Queues](sqs)** - Demonstrates directing UDP packets to SQS queues (standard and FIFO) with configurable delivery options and message attributes
 * **[Kinesis Data Streams](kinesis-streams)** - Directs UDP packets to Amazon Kinesis Data Streams with a dynamic partition key derived from the packet payload
