@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "lambda-microvm-example"
+resolve_s3 = true
+s3_prefix = "lambda-microvm-example"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ClientCidrToAllow=\"0.0.0.0/0\""
+image_repositories = []
+
+[default.global.parameters]
+region = "us-west-2"

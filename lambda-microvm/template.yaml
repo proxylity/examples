@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Proof of concept that delivers UDP packets from a Proxylity UDP Gateway listener to an AWS Lambda
+  MicroVM. The MicroVM image is built from a small Node.js HTTP application (src/echo-microvm). The
+  Proxylity service starts a MicroVM from the image when the first packet arrives, posts batches of
+  packets to it over HTTPS, and sends the application's replies back to the UDP client.
+  You must have an active Proxylity UDP Gateway subscription to deploy this template, and Lambda
+  MicroVMs must be available in the target region.
+
+Parameters:
+  ClientCidrToAllow:
+    Description: CIDR that is allowed to send packets to the listener. Default is open/everyone.
+    Type: String
+    Default: "0.0.0.0/0"
+
+Mappings:
+  ProxylityConfig:
+    Fn::Transform:
+      Name: AWS::Include
+      Parameters:
+        Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+
+Resources:
+  # Build and runtime logs for the MicroVM image, with bounded retention. Without this, Lambda creates
+  # /aws/lambda-microvms/<image-name> on first use and keeps its logs indefinitely.
+  MicrovmLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/proxylity/microvms/${AWS::StackName}"
+      RetentionInDays: 7
+
+  # The MicroVM image. Lambda builds a snapshot from the Dockerfile and app in src/echo-microvm.
+  # SAM creates the image build role automatically when BuildRoleArn is not specified; that role
+  # can write build logs to MicrovmLogs.
+  EchoMicrovmImage:
+    Type: AWS::Serverless::MicrovmImage
+    Properties:
+      Name: !Sub "${AWS::StackName}-echo"
+      Description: Echoes UDP packets delivered by Proxylity UDP Gateway.
+      CodeUri: src/echo-microvm/
+      BaseImageArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:microvm-image:al2023-1"
+      BaseImageVersion: "0"
+      Logging:
+        CloudWatch:
+          LogGroup: !Ref MicrovmLogs
+      # The /run hook receives the MicroVM ID and the run hook payload Proxylity supplies. Lambda requires
+      # the /ready build hook whenever a lifecycle hook is enabled: it tells Lambda when the app has
+      # started, so the snapshot is taken in a ready state. Hooks are served on their own port, outside
+      # the port-8080 scope of the tokens Proxylity uses.
+      Hooks:
+        Port: 9000
+        MicrovmImageHooks:
+          Ready: ENABLED
+          ReadyTimeoutInSeconds: 60
+        MicrovmHooks:
+          Run: ENABLED
+          RunTimeoutInSeconds: 10
+
+  # The role MicroVMs run with. It's what lets Lambda forward the application's stdout/stderr to
+  # CloudWatch Logs; add permissions here for any other AWS resources the application needs.
+  MicrovmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: microvm-runtime-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MicrovmLogs}"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MicrovmLogs}:*"
+
+  DeliveryLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/proxylity/udp-listeners/${AWS::StackName}"
+      RetentionInDays: 7
+
+  # Assumed by the Proxylity service to start MicroVMs from the image and to get the tokens
+  # needed to send packet batches to them.
+  DestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceRole]
+            Action: sts:AssumeRole
+
+  DestinationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-destination-policy"
+      Roles:
+        - !Ref DestinationRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # MicroVM actions are authorized against the image the MicroVM runs from (the service
+          # authorization reference has no separate MicroVM resource type), so this scopes the
+          # destination to MicroVMs started from this stack's image.
+          - Sid: MicrovmsFromThisImage
+            Effect: Allow
+            # GetMicrovm and ResumeMicrovm let the destination check a MicroVM after a failed delivery and
+            # resume it if it's suspended. Without them, a MicroVM that's gone is only replaced when its
+            # cache entry expires at the end of its 8-hour lifetime.
+            Action:
+              # TerminateMicrovm stops the extra MicroVM when two proxy-app nodes start one for the same
+              # tenant at the same moment; only one of them is used.
+              - lambda:RunMicrovm
+              - lambda:GetMicrovm
+              - lambda:ResumeMicrovm
+              - lambda:TerminateMicrovm
+              # Read the active image version and whether it enables the /run hook; the run hook
+              # payload is only sent to versions that do.
+              - lambda:GetMicrovmImage
+              - lambda:GetMicrovmImageVersion
+              - lambda:CreateMicrovmAuthToken
+            Resource: !GetAtt EchoMicrovmImage.ImageArn
+          # RunMicrovm also requires PassNetworkConnector for each connector attached to the MicroVM:
+          # HTTPS ingress for packet delivery and the default internet egress. Shell access is
+          # deliberately not granted.
+          - Sid: PassNetworkConnectors
+            Effect: Allow
+            Action: lambda:PassNetworkConnector
+            Resource:
+              - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:HTTP_INGRESS"
+              - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+          # RunMicrovm passes the execution role to the MicroVM. Allow passing only this role, and only
+          # to Lambda.
+          - Sid: PassMicrovmExecutionRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmExecutionRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: CloudWatchMetrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: "*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "${DeliveryLogs.Arn}:*"
+
+  UdpListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    DependsOn: DestinationPolicy
+    Properties:
+      ServiceToken: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceToken]
+      ApiKey: !FindInMap [ProxylityConfig, Account, ApiKey]
+      Protocols:
+        - udp
+      ClientRestrictions:
+        Networks:
+          - !Ref ClientCidrToAllow
+      Destinations:
+        - Description: Deliver UDP packets to a Lambda MicroVM started from the echo image.
+          Role:
+            Arn: !GetAtt DestinationRole.Arn
+          Formatter: base64
+          Batching:
+            Count: 10
+            TimeoutInSeconds: 0.1
+          MetricsEnabled: true
+          LogGroupName: !Ref DeliveryLogs
+          DestinationArn: !GetAtt EchoMicrovmImage.ImageArn
+          Arguments:
+            # Optional. Suspend the MicroVM after this many seconds without packets; it resumes automatically
+            # when packets arrive. 900 (15 minutes) is also the default; the range is 60 to 28800, and
+            # 28800 keeps the MicroVM running for its whole lifetime.
+            IdleDurationSeconds: "900"
+            # Optional. One MicroVM per tenant. The tenant is the top two bits of the first byte (0-3), so
+            # packets go to up to four MicroVMs. "?? 0" puts empty packets in tenant 0 instead of failing
+            # the batch. The hex formatter makes the tenant IDs readable: "00", "01", "02" and "03".
+            TenantIdExpression: "u8[0] >> 6 ?? 0"
+            TenantIdFormatter: hex
+            # Optional. Without it the MicroVM has no AWS credentials and its logs aren't forwarded.
+            ExecutionRoleArn: !GetAtt MicrovmExecutionRole.Arn
+            # Optional, up to 2048 characters, delivered to the /run hook as ExtraData.
+            RunHookExtraData: !Sub '{"Example":"lambda-microvm","Stack":"${AWS::StackName}"}'
+            # Optional. By default Lambda gives MicroVMs internet access. To control outbound traffic, create a
+            # network connector (AWS::Lambda::NetworkConnector, VPC egress) and list it here (1 to 10 ARNs). Then
+            # remove INTERNET_EGRESS from the PassNetworkConnectors statement above and add the connector ARN to it.
+            # EgressNetworkConnectorArns:
+            #   - !GetAtt MyEgressConnector.Arn
+
+Outputs:
+  Domain:
+    Description: Listener domain name
+    Value: !Sub "${UdpListener.Domain}.proxylity.com"
+
+  Port:
+    Description: Listener UDP port
+    Value: !GetAtt UdpListener.Port
+
+  UdpEndpoint:
+    Description: UDP endpoint (host:port) to send test packets to
+    Value: !Sub "${UdpListener.Domain}.proxylity.com:${UdpListener.Port}"
+
+  MicrovmImageArn:
+    Description: ARN of the MicroVM image that receives the packets
+    Value: !GetAtt EchoMicrovmImage.ImageArn
+
+  MicrovmLogGroup:
+    Description: Log group for the MicroVM image's build logs and the MicroVMs' application logs
+    Value: !Ref MicrovmLogs
