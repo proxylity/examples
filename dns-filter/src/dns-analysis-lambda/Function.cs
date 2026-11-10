@@ -27,7 +27,7 @@ namespace DnsAnalysisLambda
         {
             using var cts = new CancellationTokenSource(context.RemainingTime - TimeSpan.FromMilliseconds(200));
 
-            await Console.Out.WriteLineAsync($"Received event: {input.ToJsonString()}");
+            await Console.Out.WriteLineAsync("Received DNS log object notification.");
 
             var bucket = input["detail"]?["bucket"]?["name"]?.ToString() ?? throw new InvalidOperationException("Invalid payload (not from EventBridge?)");
             var key = input["detail"]?["object"]?["key"]?.ToString() ?? throw new InvalidOperationException("Invalid payload (not from EventBridge?)");
@@ -40,7 +40,7 @@ namespace DnsAnalysisLambda
                 .ToLookup(a => a.parts.baseDomain ?? string.Empty, a => (a.parts.subdomain, a.queries))
                 .ToDictionary(g => g.Key, g => g.ToDictionary(b => b.subdomain ?? string.Empty, b => b.queries));
 
-            await Console.Out.WriteLineAsync($"Base domains to process: \n{string.Join("\n", baseDomainsToSubdomains.Keys)}");
+            await Console.Out.WriteLineAsync($"Base domains to process: {baseDomainsToSubdomains.Count}");
 
             var attempts = 0;
             var delay = 200;
@@ -83,17 +83,14 @@ namespace DnsAnalysisLambda
             throw new Exception("Failed to process DNS log batch.");
         }
 
-        private async Task NotifyOfNewlySuspiciousDomains(List<DomainState> updatedBaseDomainData, CancellationToken cancellationToken = default)
+        internal async Task NotifyOfNewlySuspiciousDomains(List<DomainState> updatedBaseDomainData, CancellationToken cancellationToken = default)
         {
-            ICollection<string> reasons = [];
-            var newlySuspiciousDomains = updatedBaseDomainData
-                .Where(d => !d.IsSuspicious && DnsQueryAnalyzer.IsSuspicious(d, out reasons));
-            foreach (var domain in newlySuspiciousDomains)
+            foreach (var domain in updatedBaseDomainData)
             {
-                domain.IsSuspicious = true;
-                await Console.Out.WriteLineAsync($"Domain {domain.Domain} is newly suspicious: {string.Join(", ", reasons)}");
+                if (domain.IsSuspicious || !DnsQueryAnalyzer.IsSuspicious(domain, out var reasons)) continue;
+                await Console.Out.WriteLineAsync($"A domain is newly suspicious: {string.Join(", ", reasons)}");
                 // fire eventbridge event for newly suspicious domain
-                await eb.PutEventsAsync(new()
+                var response = await eb.PutEventsAsync(new()
                 {
                     Entries =
                     [
@@ -104,13 +101,23 @@ namespace DnsAnalysisLambda
                                 domain.Domain,
                                 domain.TotalQueries,
                                 domain.NxDomainCount,
-                                Reasons = reasons
+                                Reasons = reasons,
+                                ReasonSummary = string.Join("; ", reasons),
+                                RulePath = $"/rules?kind=domain&value={Uri.EscapeDataString(domain.Domain)}"
                             }),
                             Source = "dns-filter",
                             EventBusName = EVENT_BUS_NAME,
                         }
                     ]
                 }, cancellationToken);
+                if (response.FailedEntryCount > 0 || response.Entries?.Count != 1 ||
+                    !string.IsNullOrEmpty(response.Entries[0].ErrorCode) ||
+                    string.IsNullOrEmpty(response.Entries[0].EventId))
+                {
+                    var error = response.Entries?.FirstOrDefault();
+                    throw new InvalidOperationException($"Suspicious-domain event was not accepted: {error?.ErrorCode} {error?.ErrorMessage}");
+                }
+                domain.IsSuspicious = true;
             }
         }
 

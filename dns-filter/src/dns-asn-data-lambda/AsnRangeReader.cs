@@ -22,13 +22,12 @@ class AsnRangeReader()
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             var parts = line.Split('\t');
-            if (parts.Length < 3)
-                continue;
+            if (parts.Length < 3) throw new FormatException("Incomplete IP-to-ASN data row.");
 
             if (!IPAddress.TryParse(parts[0], out var startIp) ||
                 !IPAddress.TryParse(parts[1], out var endIp) ||
                 !uint.TryParse(parts[2], out var asn))
-                continue;
+                throw new FormatException("Invalid IP-to-ASN data row.");
 
             if (!blockedAsns.Contains(asn))
                 continue;
@@ -47,15 +46,7 @@ class AsnRangeReader()
 
     private static BigInteger IpToBigInteger(IPAddress ip)
     {
-        var bytes = ip.GetAddressBytes();
-
-        // Ensure big-endian byte order for consistent comparison
-        if (BitConverter.IsLittleEndian)
-            Array.Reverse(bytes);
-
-        // Add a zero byte to ensure positive BigInteger for IPv6
-        byte[] paddedBytes = [0, .. bytes];
-
-        return new BigInteger(paddedBytes);
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) ip = ip.MapToIPv6();
+        return new BigInteger(ip.GetAddressBytes(), isUnsigned: true, isBigEndian: true);
     }
 }

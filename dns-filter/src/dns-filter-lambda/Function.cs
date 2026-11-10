@@ -7,6 +7,8 @@ using Amazon.KinesisFirehose;
 using System.Net.Sockets;
 using System.Data;
 using Amazon.S3;
+using System.Collections.Concurrent;
+using System.Globalization;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -25,7 +27,7 @@ namespace DnsFilterLambda
 
     readonly string? LOG_FIREHOSE_STREAM = Environment.GetEnvironmentVariable("LOG_FIREHOSE_STREAM");
 
-    readonly Dictionary<string, (bool blocked, IPAddress? to, DateTime expires)> _cache = [];
+    readonly ConcurrentDictionary<string, (bool blocked, IPAddress? to, DateTime expires, bool allowed)> _cache = [];
     readonly AsnLookupService _asnLookup = new(s3);
     static readonly DNS.Client.DnsClient _upstreamClient = new(UPSTREAM_DNS);
 
@@ -33,9 +35,8 @@ namespace DnsFilterLambda
 
     public async Task<JsonObject> FunctionHandler(JsonObject input, ILambdaContext context)
     {
-      await Console.Out.WriteLineAsync($"Received event: {input.ToJsonString()}");
-
       await _asnLookup.InitializeAsync();
+      if (_cache.Count > 10000) _cache.Clear();
 
       var packets = input["Messages"]?.AsArray() ?? throw new InvalidOperationException("Invalid payload (not from UDP Gateway?)");
 
@@ -59,8 +60,6 @@ namespace DnsFilterLambda
         try
         {
           var response = DNS.Protocol.Response.FromRequest(request);
-
-          await Console.Out.WriteLineAsync($"Processing DNS request {request}");
 
           var question = request.Questions[0];
           var domain = question.Name.ToString().TrimEnd('.');
@@ -110,45 +109,47 @@ namespace DnsFilterLambda
             else
             {
               response.ResponseCode = DNS.Protocol.ResponseCode.ServerFailure;
-              await Console.Error.WriteLineAsync($"Failed to resolve {question.Name} upstream");
+              await Console.Error.WriteLineAsync("Failed to resolve a query upstream");
             }
           }
 
-          // Process answer records for ASN filtering
-          var addressRecordsByBlocked = response?.AnswerRecords
-            .Where(a => a.Type is DNS.Protocol.RecordType.A or DNS.Protocol.RecordType.AAAA)
-            .ToLookup(a => GetAsnInfo(new IPAddress(a.Data)))
-            .ToArray() ?? [];
-
-          foreach (var g in addressRecordsByBlocked)
+          foreach (var alias in response.AnswerRecords.OfType<DNS.Protocol.ResourceRecords.CanonicalNameResourceRecord>())
           {
-            var (asnBlocked, asnTo) = await g.Key;
-            if (asnBlocked)
+            var (aliasBlocked, _) = await GetDomainInfo(alias.CanonicalDomainName.ToString());
+            if (aliasBlocked)
             {
-              foreach (var a in g)
-              {
-                // Replace with block record
-                var blockRecord = MakeBlockedAsnIpRecord(a.Type, a.Name);
-                response!.AnswerRecords.Remove(a);
-                response.AnswerRecords.Add(blockRecord);
-              }
-            }
-            else if (asnTo is not null)
-            {
-              foreach (var a in g)
-              {
-                // Replace with redirect record
-                var redirectRecord = MakeRedirectRecord(a.Type, a.Name, asnTo);
-                if (redirectRecord is not null)
-                {
-                  response!.AnswerRecords.Remove(a);
-                  response.AnswerRecords.Add(redirectRecord);
-                }
-              }
+              response.AnswerRecords.Clear();
+              response.AuthorityRecords.Clear();
+              response.AdditionalRecords.Clear();
+              response.ResponseCode = DNS.Protocol.ResponseCode.NameError;
+              response.AuthenticData = false;
+              break;
             }
           }
 
-          await Console.Out.WriteLineAsync($"Produced response: {response}");
+          var sections = new[] { response.AnswerRecords, response.AdditionalRecords };
+          var ipPolicies = await GetIpInfos(sections.SelectMany(section => section)
+            .Where(record => record.Type is DNS.Protocol.RecordType.A or DNS.Protocol.RecordType.AAAA)
+            .Select(record => new IPAddress(record.Data)));
+          foreach (var section in sections)
+          {
+            foreach (var record in section.Where(a => a.Type is DNS.Protocol.RecordType.A or DNS.Protocol.RecordType.AAAA).ToArray())
+            {
+              var address = new IPAddress(record.Data);
+              var (ipBlocked, ipTo) = ipPolicies[address];
+              var (asnBlocked, asnTo) = await GetAsnInfo(address);
+              if (!ipBlocked && !asnBlocked && ipTo is null && asnTo is null) continue;
+              var replacement = ipBlocked || asnBlocked
+                ? MakeBlockedAsnIpRecord(record.Type, record.Name)
+                : MakeRedirectRecord(record.Type, record.Name, ipTo ?? asnTo ?? address);
+              // A redirect whose address family doesn't match the record has no replacement; drop the
+              // original record rather than leaking the real address.
+              section.Remove(record);
+              if (replacement is not null) section.Add(replacement);
+              response.AuthenticData = false;
+            }
+          }
+
           await LogDnsQueryAsync(request, response!);
 
           return new()
@@ -172,7 +173,7 @@ namespace DnsFilterLambda
         }
       }
 
-      await Console.Error.WriteLineAsync($"Failed to parse DNS request from data: {Convert.ToHexString(data)}");
+      await Console.Error.WriteLineAsync("Failed to parse DNS request.");
       return new()
       {
         ["Tag"] = tag,
@@ -242,18 +243,19 @@ namespace DnsFilterLambda
       }
       catch (DNS.Client.ResponseException ex)
       {
-        Console.WriteLine($"Upstream DNS Error resolving {question.Name}: {ex.Message}");
+        Console.WriteLine($"Upstream DNS error: {ex.GetType().Name}");
         return ex.Response;
       }
       catch (Exception ex)
       {
-        Console.WriteLine($"Unexpected error resolving {question.Name}: {ex.Message}");
+        Console.WriteLine($"Unexpected error resolving a query: {ex.GetType().Name}");
         return null;
       }
     }
 
     async Task<(bool blocked, IPAddress? to)> GetDomainInfo(string domain)
     {
+      domain = new IdnMapping().GetAscii(domain.TrimEnd('.')).ToLowerInvariant();
       var now = DateTime.UtcNow;
       var parts = domain.Split('.');
       var roots = parts.Select((_, i) => string.Join('.', parts.Skip(i))).ToArray();
@@ -265,7 +267,8 @@ namespace DnsFilterLambda
         IPAddress? to = null;
         foreach (var root in roots)
         {
-          var cached = _cache[root];
+          if (!_cache.TryGetValue(root, out var cached)) return await RefreshDomainCache(roots);
+          if (cached.allowed) break;
           blocked |= cached.blocked;
           to ??= cached.to;
         }
@@ -277,25 +280,7 @@ namespace DnsFilterLambda
 
     async Task<(bool blocked, IPAddress? to)> RefreshDomainCache(string[] roots)
     {
-      var batchRequest = new BatchGetItemRequest
-      {
-        RequestItems = new()
-        {
-          [TABLE_NAME] = new()
-          {
-            Keys = [
-              ..roots.Select(r => new Dictionary<string, AttributeValue>
-                {
-                    { "PK", new() { S = r } },
-                    { "SK", new() { S = r } }
-                })
-              ]
-          }
-        }
-      };
-
-      var response = await ddb.BatchGetItemAsync(batchRequest);
-      var items = response.Responses.GetValueOrDefault(TABLE_NAME, []);
+      var items = await ReadPolicies(roots);
       var itemLookup = items.ToDictionary(item => item["PK"].S);
 
       var blocked = false;
@@ -308,12 +293,74 @@ namespace DnsFilterLambda
         var isBlocked = hasItem && item?.TryGetValue("blocked", out var b) == true && b.BOOL == true;
         var redirect = hasItem && item?.TryGetValue("redirect", out var r) == true ? IPAddress.Parse(r.S) : null;
 
-        _cache[root] = (isBlocked, redirect, expiration);
-        blocked |= isBlocked;
-        to ??= redirect;
+        var allowed = hasItem && item?.TryGetValue("allowed", out var allow) == true && allow.BOOL == true;
+        _cache[root] = (isBlocked, redirect, expiration, allowed);
+      }
+      foreach (var root in roots)
+      {
+        if (!itemLookup.TryGetValue(root, out var item)) continue;
+        if (item.TryGetValue("allowed", out var allowed) && allowed.BOOL == true) break;
+        blocked |= item.TryGetValue("blocked", out var b) && b.BOOL == true;
+        if (to is null && item.TryGetValue("redirect", out var r)) to = IPAddress.Parse(r.S);
       }
 
       return (blocked, to);
+    }
+
+    internal async Task<List<Dictionary<string, AttributeValue>>> ReadPolicies(IEnumerable<string> keys)
+    {
+      List<Dictionary<string, AttributeValue>> items = [];
+      foreach (var chunk in keys.Distinct(StringComparer.Ordinal).Chunk(100))
+      {
+        var pending = new Dictionary<string, KeysAndAttributes>
+        {
+          [TABLE_NAME] = new() { Keys = chunk.Select(key => new Dictionary<string, AttributeValue>
+            { ["PK"] = new() { S = key }, ["SK"] = new() { S = key } }).ToList() }
+        };
+        for (var attempt = 0; pending.Count > 0; attempt++)
+        {
+          if (attempt == 8) throw new InvalidOperationException("DynamoDB policy reads remained unprocessed after retries.");
+          if (attempt > 0) await Task.Delay(Math.Min(1000, 25 * (1 << attempt)) + Random.Shared.Next(25));
+          var result = await ddb.BatchGetItemAsync(new BatchGetItemRequest { RequestItems = pending });
+          if (result.Responses?.TryGetValue(TABLE_NAME, out var page) == true) items.AddRange(page);
+          pending = result.UnprocessedKeys ?? [];
+        }
+      }
+      return items;
+    }
+
+    internal async Task<(bool blocked, IPAddress? to)> GetIpInfo(IPAddress address)
+    {
+      return (await GetIpInfos([address]))[address];
+    }
+
+    internal async Task<Dictionary<IPAddress, (bool blocked, IPAddress? to)>> GetIpInfos(IEnumerable<IPAddress> addresses)
+    {
+      var results = new Dictionary<IPAddress, (bool blocked, IPAddress? to)>();
+      var missing = new Dictionary<IPAddress, string[]>();
+      foreach (var address in addresses.Distinct())
+      {
+        if (_cache.TryGetValue($"ADDRESS#{address}", out var cached) && DateTime.UtcNow < cached.expires)
+          results[address] = (cached.blocked, cached.to);
+        else missing[address] = NetworkKeys.For(address).ToArray();
+      }
+      if (missing.Count == 0) return results;
+      var lookup = (await ReadPolicies(missing.Values.SelectMany(keys => keys))).ToDictionary(item => item["PK"].S);
+      foreach (var (address, keys) in missing)
+      {
+        var blocked = false;
+        IPAddress? redirect = null;
+        foreach (var key in keys)
+        {
+          if (!lookup.TryGetValue(key, out var item)) continue;
+          if (item.TryGetValue("allowed", out var allowed) && allowed.BOOL == true) break;
+          blocked |= item.TryGetValue("blocked", out var b) && b.BOOL == true;
+          if (redirect is null && item.TryGetValue("redirect", out var to)) redirect = IPAddress.Parse(to.S);
+        }
+        _cache[$"ADDRESS#{address}"] = (blocked, redirect, DateTime.UtcNow.Add(FILTERED_RECORD_TTL), false);
+        results[address] = (blocked, redirect);
+      }
+      return results;
     }
 
     async Task<(bool blocked, IPAddress? to)> GetAsnInfo(IPAddress ip)
@@ -345,7 +392,7 @@ namespace DnsFilterLambda
       var blocked = item?.TryGetValue("blocked", out var b) == true && b.BOOL == true;
       var redirect = item?.TryGetValue("redirect", out var t) == true ? t.S switch { string s => IPAddress.Parse(s), _ => null } : null;
 
-      _cache[$"AS#{asn}"] = (blocked, redirect, DateTime.UtcNow.Add(FILTERED_RECORD_TTL));
+      _cache[$"AS#{asn}"] = (blocked, redirect, DateTime.UtcNow.Add(FILTERED_RECORD_TTL), false);
       return (blocked, redirect);
     }
   }

@@ -23,7 +23,7 @@ public static class DomainUtils
         }
         catch (Exception e)
         {
-            Console.Error.WriteLine($"Failed to parse FQDN {fqdn}: {e.Message}");
+            Console.Error.WriteLine($"Failed to parse an FQDN: {e.GetType().Name}");
             return (fqdn, string.Empty); // fallback to full domain
         }
     }

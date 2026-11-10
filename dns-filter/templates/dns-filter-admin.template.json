@@ -1,0 +1,122 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Authenticated Node.js Lambda Web Function administration UI. Deploy twice to bind its assigned HTTPS origin.",
+  "Parameters": {
+    "TableName": { "Type": "String" },
+    "BuildProject": { "Type": "String" },
+    "BlocklistProfile": { "Type": "String", "Default": "Balanced", "AllowedValues": ["Light", "Balanced", "Strict"] },
+    "ArtifactBucket": { "Type": "String" },
+    "ArtifactKey": { "Type": "String" },
+    "ArtifactVersion": { "Type": "String", "MinLength": 1 },
+    "ArtifactKeyArn": { "Type": "String" },
+    "PublicUrl": { "Type": "String", "Default": "", "Description": "Assigned endpoint origin; empty on first deployment, then set from AdminUrl output." },
+    "IdentityProviderNames": { "Type": "CommaDelimitedList", "Default": "COGNITO", "Description": "Configured Cognito SAML/OIDC provider names. Create providers in the retained pool before selecting them." },
+    "OperationalLogRetentionDays": { "Type": "Number", "Default": 30, "AllowedValues": [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365] }
+  },
+  "Conditions": { "HasPublicUrl": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "PublicUrl" }, ""] }] } },
+  "Resources": {
+    "AdminKey": {
+      "Type": "AWS::KMS::Key", "DeletionPolicy": "Retain", "UpdateReplacePolicy": "Retain",
+      "Properties": { "EnableKeyRotation": true, "KeyPolicy": { "Version": "2012-10-17", "Statement": [
+        { "Effect": "Allow", "Principal": { "AWS": { "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root" } }, "Action": "kms:*", "Resource": "*" },
+        { "Sid": "WebFunctionRevisionDecryption", "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" },
+          "Action": "kms:Decrypt", "Resource": "*",
+          "Condition": { "StringLike": {
+            "kms:EncryptionContext:aws:lambda:WebFunctionRevisionArn": { "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/${AWS::StackName}/revision/*" },
+            "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/${AWS::StackName}/revision/*" }
+          } } },
+        { "Effect": "Allow", "Principal": { "Service": { "Fn::Sub": "logs.${AWS::Region}.amazonaws.com" } },
+          "Action": ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"], "Resource": "*",
+          "Condition": { "ArnLike": { "kms:EncryptionContext:aws:logs:arn": { "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/web/${AWS::StackName}" } } } }
+      ] } }
+    },
+    "SessionSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": { "KmsKeyId": { "Ref": "AdminKey" }, "GenerateSecretString": { "PasswordLength": 64, "ExcludePunctuation": true } }
+    },
+    "UserPool": {
+      "Type": "AWS::Cognito::UserPool", "DeletionPolicy": "Retain", "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "AdminCreateUserConfig": { "AllowAdminCreateUserOnly": true },
+        "UsernameAttributes": ["email"], "AutoVerifiedAttributes": ["email"],
+        "MfaConfiguration": "ON", "EnabledMfas": ["SOFTWARE_TOKEN_MFA"],
+        "Policies": { "PasswordPolicy": { "MinimumLength": 14, "RequireLowercase": true, "RequireUppercase": true, "RequireNumbers": true, "RequireSymbols": true } }
+      }
+    },
+    "UserPoolDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": { "Domain": { "Fn::Sub": "${AWS::StackName}-${AWS::AccountId}" }, "UserPoolId": { "Ref": "UserPool" }, "ManagedLoginVersion": 2 }
+    },
+    "UserPoolClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "Properties": {
+        "UserPoolId": { "Ref": "UserPool" }, "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true, "AllowedOAuthFlows": ["code"], "AllowedOAuthScopes": ["openid", "email"],
+        "SupportedIdentityProviders": { "Ref": "IdentityProviderNames" }, "PreventUserExistenceErrors": "ENABLED",
+        "CallbackURLs": [{ "Fn::If": ["HasPublicUrl", { "Fn::Sub": "${PublicUrl}/callback" }, "https://example.invalid/callback"] }],
+        "LogoutURLs": [{ "Fn::If": ["HasPublicUrl", { "Ref": "PublicUrl" }, "https://example.invalid"] }],
+        "IdTokenValidity": 60, "AccessTokenValidity": 60, "TokenValidityUnits": { "IdToken": "minutes", "AccessToken": "minutes" }
+      }
+    },
+    "LoginBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "DependsOn": "UserPoolDomain",
+      "Properties": { "UserPoolId": { "Ref": "UserPool" }, "ClientId": { "Ref": "UserPoolClient" }, "UseCognitoProvidedValues": true }
+    },
+    "AdminGroup": { "Type": "AWS::Cognito::UserPoolGroup", "Properties": { "GroupName": "admin", "UserPoolId": { "Ref": "UserPool" } } },
+    "ViewerGroup": { "Type": "AWS::Cognito::UserPoolGroup", "Properties": { "GroupName": "viewer", "UserPoolId": { "Ref": "UserPool" } } },
+    "AdminLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": { "LogGroupName": { "Fn::Sub": "/aws/lambda/web/${AWS::StackName}" }, "KmsKeyId": { "Fn::GetAtt": ["AdminKey", "Arn"] }, "RetentionInDays": { "Ref": "OperationalLogRetentionDays" } }
+    },
+    "AdminRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": { "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }] } }
+    },
+    "AdminPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": { "PolicyName": "DnsAdmin", "Roles": [{ "Ref": "AdminRole" }], "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+        { "Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:Scan", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
+          "Resource": { "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}" } },
+        { "Effect": "Allow", "Action": "codebuild:StartBuild", "Resource": { "Fn::Sub": "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${BuildProject}" } },
+        { "Effect": "Allow", "Action": "secretsmanager:GetSecretValue", "Resource": { "Ref": "SessionSecret" } },
+        { "Effect": "Allow", "Action": "s3:GetObjectVersion", "Resource": { "Fn::Sub": "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}" } },
+        { "Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": [{ "Fn::GetAtt": ["AdminKey", "Arn"] }, { "Ref": "ArtifactKeyArn" }] },
+        { "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": { "Fn::GetAtt": ["AdminLogGroup", "Arn"] } }
+      ] } }
+    },
+    "AdminFunction": { "Type": "AWS::Lambda::WebFunction", "Properties": { "FunctionName": { "Ref": "AWS::StackName" } } },
+    "AdminRevision": {
+      "Type": "AWS::Lambda::WebFunctionRevision", "DependsOn": "AdminPolicy",
+      "Properties": {
+        "FunctionName": { "Ref": "AdminFunction" }, "KmsKeyArn": { "Fn::GetAtt": ["AdminKey", "Arn"] },
+        "BuildConfig": { "CodeConfig": { "S3Object": { "Bucket": { "Ref": "ArtifactBucket" }, "Key": { "Ref": "ArtifactKey" }, "VersionId": { "Ref": "ArtifactVersion" } } }, "RuntimeConfig": { "Runtime": "nodejs24.x" } },
+        "ServiceConfig": {
+          "ExecutionRoleArn": { "Fn::GetAtt": ["AdminRole", "Arn"] }, "TimeoutSeconds": 30, "MaxConcurrencyPerEnvironment": 10,
+          "TelemetryConfig": { "LoggingConfig": { "LogGroup": { "Ref": "AdminLogGroup" }, "ApplicationLogLevel": "INFO", "SystemLogLevel": "INFO" } },
+          "EnvironmentVariables": {
+            "TABLE_NAME": { "Ref": "TableName" }, "HOME_REGION": { "Ref": "AWS::Region" },
+            "BUILD_PROJECT": { "Ref": "BuildProject" }, "BLOCKLIST_PROFILE": { "Ref": "BlocklistProfile" },
+            "PUBLIC_URL": { "Fn::If": ["HasPublicUrl", { "Ref": "PublicUrl" }, "https://example.invalid"] },
+            "COGNITO_ISSUER": { "Fn::Sub": "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}" },
+            "COGNITO_CLIENT_ID": { "Ref": "UserPoolClient" },
+            "COGNITO_DOMAIN": { "Fn::Sub": "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com" },
+            "SESSION_SECRET_ARN": { "Ref": "SessionSecret" }
+          }
+        }
+      }
+    },
+    "AdminEndpoint": {
+      "Type": "AWS::Lambda::WebFunctionEndpoint",
+      "Properties": {
+        "FunctionName": { "Ref": "AdminFunction" }, "EndpointName": "admin", "EndpointType": "HomeRegion", "AuthType": "ApplicationManaged",
+        "RevisionWeights": [{ "RevisionId": { "Fn::GetAtt": ["AdminRevision", "RevisionId"] }, "Weight": 100 }]
+      }
+    }
+  },
+  "Outputs": {
+    "AdminUrl": { "Value": { "Fn::Sub": "https://${AdminEndpoint.DomainName}" } },
+    "UserPoolId": { "Value": { "Ref": "UserPool" } },
+    "UserPoolClientId": { "Value": { "Ref": "UserPoolClient" } }
+  }
+}

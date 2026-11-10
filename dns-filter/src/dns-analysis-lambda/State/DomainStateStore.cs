@@ -33,11 +33,13 @@ public class DomainStateStore : IDomainStateStore
 
         return new()
         {
+            Domain = domain,
+            IsSuspicious = response.Item.TryGetValue("IsSuspicious", out var suspicious) && suspicious.BOOL == true,
             TotalQueries = int.Parse(response.Item["TotalQueries"].N),
             NxDomainCount = int.Parse(response.Item["NxDomainCount"].N),
             Version = long.Parse(response.Item["Version"].N),
             UniqueSubdomains = DeserializeHll(response.Item["HllState"].B.ToArray()),
-            Expires = response.Item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime 
+            Expires = response.Item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime
                 : DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
         };
     }
@@ -56,95 +58,106 @@ public class DomainStateStore : IDomainStateStore
             { "SK", new() { S = "STATE" } }
         }).ToList();
 
-        var request = new BatchGetItemRequest
+        var items = new List<Dictionary<string, AttributeValue>>();
+        foreach (var batch in keys.Chunk(100))
         {
-            RequestItems = new()
+            var pending = new Dictionary<string, KeysAndAttributes>
             {
-                [_tableName] = new() { Keys = keys }
+                [_tableName] = new() { Keys = [.. batch], ConsistentRead = true }
+            };
+            for (var attempt = 0; pending.Count > 0; attempt++)
+            {
+                var response = await _dynamoDb.BatchGetItemAsync(new BatchGetItemRequest { RequestItems = pending }, cancellationToken);
+                items.AddRange(response.Responses?.GetValueOrDefault(_tableName, []) ?? []);
+                pending = response.UnprocessedKeys?.Where(kv => kv.Value.Keys?.Count > 0)
+                    .ToDictionary(kv => kv.Key, kv => kv.Value) ?? [];
+                if (pending.Count == 0) break;
+                if (attempt >= 4)
+                {
+                    await Console.Error.WriteLineAsync("Domain-state reads remained unprocessed after five attempts.");
+                    throw new InvalidOperationException("Incomplete domain-state reads; refusing to treat unread domains as new.");
+                }
+                foreach (var attributes in pending.Values) attributes.ConsistentRead = true;
+                await Task.Delay(TimeSpan.FromMilliseconds(100 * (1 << attempt)), cancellationToken);
             }
-        };
+        }
 
-        var response = await _dynamoDb.BatchGetItemAsync(request, cancellationToken);
-        var items = response.Responses.GetValueOrDefault(_tableName, []);
-
-        return [.. items.Select((item, index) => item.Count > 0 ? new DomainState
-            {
-                Domain = item["PK"].S,
-                TotalQueries = int.Parse(item["TotalQueries"].N),
-                NxDomainCount = int.Parse(item["NxDomainCount"].N),
-                Version = long.Parse(item["Version"].N),
-                UniqueSubdomains = DeserializeHll(item["HllState"].B.ToArray()),
-                Expires = item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime 
+        var states = items.ToDictionary(item => item["PK"].S, item => new DomainState
+        {
+            Domain = item["PK"].S,
+            IsSuspicious = item.TryGetValue("IsSuspicious", out var suspicious) && suspicious.BOOL == true,
+            TotalQueries = int.Parse(item["TotalQueries"].N),
+            NxDomainCount = int.Parse(item["NxDomainCount"].N),
+            Version = long.Parse(item["Version"].N),
+            UniqueSubdomains = DeserializeHll(item["HllState"].B.ToArray()),
+            Expires = item.TryGetValue("TTL", out AttributeValue? value) ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(value.N)).UtcDateTime
                     : DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
-            } : fillMissing ? new() {
-                Domain = domains.ElementAt(index) ?? throw new ArgumentException("Domain cannot be null or empty.", nameof(domains)),
-                TotalQueries = 0,
-                NxDomainCount = 0,
-                Version = 0,
-                UniqueSubdomains = new HyperLogLogEstimator(),
-                Expires = DateTimeOffset.UtcNow.AddDays(7) // Default to 7 days if no expiry set
-            } : null
-        )];
+        });
+        return [.. domains.Select(domain => states.TryGetValue(domain, out var state) ? state :
+            fillMissing ? new DomainState { Domain = domain } : null)];
     }
 
     public async Task BatchUpdateAsync(ICollection<DomainState> updatedStates, CancellationToken cancellationToken = default)
     {
-        // use transaction write to ensure atomicity, and update all states in a single operation.
-        // using  TransactionWriteItemsRequest to batch update multiple items atomically.
-        var request = new TransactWriteItemsRequest
+        // Each transaction atomically updates at most 100 version-guarded domain states.
+        foreach (var batch in updatedStates.Chunk(100))
         {
-            TransactItems = [.. updatedStates.Select(state => new TransactWriteItem
+            var request = new TransactWriteItemsRequest
             {
-                Update = new()
+                TransactItems = [.. batch.Select(state => new TransactWriteItem
                 {
-                    TableName = _tableName,
-                    Key = new Dictionary<string, AttributeValue>
+                    Update = new()
                     {
-                        { "PK", new() { S = state.Domain } },
-                        { "SK", new() { S = "STATE" } }
-                    },
-                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, #ttl = :ttl, #version = if_not_exists(#version,:zero) + :one",
-                    ConditionExpression = "attribute_not_exists(PK) OR #version = :expectedVersion",
-                    ExpressionAttributeNames = new Dictionary<string, string>
-                    {
-                        { "#ttl", "TTL" },
-                        { "#version", "Version" }
-                    },
-                    ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-                    {
-                        { ":total", new() { N = state.TotalQueries.ToString() } },
-                        { ":nx", new() { N = state.NxDomainCount.ToString() } },
-                        { ":hll", new() { B = new MemoryStream(state.UniqueSubdomains.Serialize()) } },
-                        { ":zero", new() { N = "0" } },
-                        { ":one", new() { N = "1" } },
-                        { ":expectedVersion", new() { N = state.Version.ToString() } },
-                        { ":ttl", new() { N = state.Expires.ToUnixTimeSeconds().ToString() } }
+                        TableName = _tableName,
+                        Key = new Dictionary<string, AttributeValue>
+                        {
+                            { "PK", new() { S = state.Domain } },
+                            { "SK", new() { S = "STATE" } }
+                        },
+                        UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, IsSuspicious = :suspicious, #ttl = :ttl, #version = if_not_exists(#version,:zero) + :one",
+                        ConditionExpression = "attribute_not_exists(PK) OR #version = :expectedVersion",
+                        ExpressionAttributeNames = new Dictionary<string, string>
+                        {
+                            { "#ttl", "TTL" },
+                            { "#version", "Version" }
+                        },
+                        ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                        {
+                            { ":total", new() { N = state.TotalQueries.ToString() } },
+                            { ":nx", new() { N = state.NxDomainCount.ToString() } },
+                            { ":hll", new() { B = new MemoryStream(state.UniqueSubdomains.Serialize()) } },
+                            { ":suspicious", new() { BOOL = state.IsSuspicious } },
+                            { ":zero", new() { N = "0" } },
+                            { ":one", new() { N = "1" } },
+                            { ":expectedVersion", new() { N = state.Version.ToString() } },
+                            { ":ttl", new() { N = state.Expires.ToUnixTimeSeconds().ToString() } }
+                        }
                     }
-                }
-            })]
-        };
+                })]
+            };
 
-        await Console.Out.WriteLineAsync($"Batch updating {updatedStates.Count} domain states with keys: \n{string.Join("\n", request.TransactItems.Select(item => $"{item.Update.Key["PK"].S}@{item.Update.Key["SK"].S} version {item.Update.ExpressionAttributeValues[":expectedVersion"].N}"))}");
+            await Console.Out.WriteLineAsync($"Batch updating {batch.Length} domain states.");
 
-        try
-        {
-            var response = await _dynamoDb.TransactWriteItemsAsync(request, cancellationToken);
-            await Console.Out.WriteLineAsync($"Batch update response: {response.HttpStatusCode}");
-        }
-        catch (TransactionCanceledException ex)
-        {
-            // Handle transaction cancellation, which may occur due to conditional check failures
-            await Console.Error.WriteLineAsync($"Transaction canceled: {ex.Message}");
-            foreach (var item in ex.CancellationReasons)
+            try
             {
-                await Console.Error.WriteLineAsync($"Reason: {item.Message}");
+                var response = await _dynamoDb.TransactWriteItemsAsync(request, cancellationToken);
+                await Console.Out.WriteLineAsync($"Batch update response: {response.HttpStatusCode}");
             }
-            throw; // rethrow to let the caller handle it
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync($"Batch update failed: {ex.Message}");
-            throw; // rethrow to let the caller handle it
+            catch (TransactionCanceledException ex)
+            {
+                // Handle transaction cancellation, which may occur due to conditional check failures
+                await Console.Error.WriteLineAsync($"Transaction canceled: {ex.Message}");
+                foreach (var item in ex.CancellationReasons)
+                {
+                    await Console.Error.WriteLineAsync($"Reason: {item.Message}");
+                }
+                throw; // rethrow to let the caller handle it
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"Batch update failed: {ex.Message}");
+                throw; // rethrow to let the caller handle it
+            }
         }
     }
 
@@ -156,7 +169,7 @@ public class DomainStateStore : IDomainStateStore
 
         while (attempt < maxRetries)
         {
-            await Console.Out.WriteLineAsync($"Updating state for domain: {updatedState.Domain}, Version: {updatedState.Version}, Expires: {updatedState.Expires}");
+            await Console.Out.WriteLineAsync($"Updating a domain state, version {updatedState.Version}");
             try
             {
                 var request = new UpdateItemRequest
@@ -166,7 +179,7 @@ public class DomainStateStore : IDomainStateStore
                         { "PK", new(updatedState.Domain) },
                         { "SK", new("STATE") }
                     },
-                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, #ttl = :ttl, #version = if_not_exists(#version,:zero) + :one",
+                    UpdateExpression = "SET TotalQueries = :total, NxDomainCount = :nx, HllState = :hll, IsSuspicious = :suspicious, #ttl = :ttl, #version = if_not_exists(#version,:zero) + :one",
                     ConditionExpression = "attribute_not_exists(PK) OR Version = :expectedVersion",
                     ExpressionAttributeNames = new()
                     {
@@ -178,6 +191,7 @@ public class DomainStateStore : IDomainStateStore
                         { ":total", new() { N = updatedState.TotalQueries.ToString() } },
                         { ":nx", new() { N = updatedState.NxDomainCount.ToString() } },
                         { ":hll", new() { B = new MemoryStream(updatedState.UniqueSubdomains.Serialize()) } },
+                        { ":suspicious", new() { BOOL = updatedState.IsSuspicious } },
                         { ":zero", new() { N = "0" } },
                         { ":one", new() { N = "1" } },
                         { ":expectedVersion", new() { N = updatedState.Version.ToString() } },
@@ -199,6 +213,7 @@ public class DomainStateStore : IDomainStateStore
 
                 // Merge our local HLL into the latest version
                 latestState.UniqueSubdomains.Merge(updatedState.UniqueSubdomains);
+                latestState.IsSuspicious |= updatedState.IsSuspicious;
                 latestState.TotalQueries += updatedState.TotalQueries - latestState.TotalQueries;
                 latestState.NxDomainCount += updatedState.NxDomainCount - latestState.NxDomainCount;
 

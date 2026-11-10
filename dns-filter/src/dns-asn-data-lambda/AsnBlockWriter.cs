@@ -15,14 +15,17 @@ class AsnBlockWriter()
             var range = ranges[i];
             var offset = RECORD_SIZE * i;
 
-            var startIp = range.Start.ToByteArray();
-            var endIp = range.End.ToByteArray();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (range.Start < 0 || range.End < range.Start) throw new InvalidDataException("Invalid ASN range.");
+            var startIp = range.Start.ToByteArray(isUnsigned: true, isBigEndian: true);
+            var endIp = range.End.ToByteArray(isUnsigned: true, isBigEndian: true);
+            if (startIp.Length > 16 || endIp.Length > 16) throw new InvalidDataException("ASN range exceeds IPv6 width.");
             var asn = range.Asn;
 
             // Copy start IP
-            Buffer.BlockCopy(startIp, 0, buffer, offset + 4, startIp.Length);
+            Buffer.BlockCopy(startIp, 0, buffer, offset + 20 - startIp.Length, startIp.Length);
             // Copy end IP
-            Buffer.BlockCopy(endIp, 0, buffer, offset + 20, endIp.Length);
+            Buffer.BlockCopy(endIp, 0, buffer, offset + 36 - endIp.Length, endIp.Length);
             // Copy ASN
             BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 36), asn);
         }

@@ -11,6 +11,8 @@ public class AsnLookupService(IAmazonS3 s3)
     private ConcurrentDictionary<IPAddress, uint?> _asnCache = [];
 
     private volatile bool _isInitialized;
+    private DateTime _nextRefresh;
+    private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     public AsnLookupService() : this (new AmazonS3Client())
     {
@@ -18,13 +20,28 @@ public class AsnLookupService(IAmazonS3 s3)
 
     public async Task InitializeAsync()
     {
-        if (_isInitialized) return;
-        await RefreshAsync();
+        await _refreshLock.WaitAsync();
+        try
+        {
+            if (_isInitialized && DateTime.UtcNow < _nextRefresh) return;
+            try
+            {
+                await RefreshAsync();
+                _nextRefresh = DateTime.UtcNow.AddMinutes(5);
+            }
+            catch (Exception error) when (_isInitialized && error is AmazonS3Exception or IOException or HttpRequestException or TaskCanceledException)
+            {
+                await Console.Error.WriteLineAsync($"ASN refresh failed; retaining last loaded data: {error.Message}");
+                _nextRefresh = DateTime.UtcNow.AddMinutes(1);
+            }
+        }
+        finally { _refreshLock.Release(); }
     }
 
     private async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
         var newBlockData = await LoadAsnLookupDataAsync(cancellationToken);
+        if (newBlockData.Length % 40 != 0) throw new InvalidDataException("Invalid ASN binary record length.");
         var newAsnBlockLookup = new AsnBlockLookup(newBlockData);
         var newAsnCache = new ConcurrentDictionary<IPAddress, uint?>(_asnCache.Where(r => newAsnBlockLookup.Lookup(r.Key) == r.Value));
 
@@ -47,10 +64,10 @@ public class AsnLookupService(IAmazonS3 s3)
             var buffer = new byte[response.ContentLength];
             await stream.ReadExactlyAsync(buffer.AsMemory(0, (int)response.ContentLength), cancellationToken);
             return buffer;
-        } catch (Exception ex)
+        } catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound && !_isInitialized)
         {
-            await Console.Out.WriteLineAsync($"Failed to get ASN block data from S3: {ex.Message}");
-            return ReadOnlyMemory<byte>.Empty; // Return empty if not found or error
+            await Console.Error.WriteLineAsync($"Failed to get ASN block data from S3: {ex.Message}");
+            return ReadOnlyMemory<byte>.Empty;
         }
     }
 

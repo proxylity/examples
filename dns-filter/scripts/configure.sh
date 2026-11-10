@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -euo pipefail
 
 #
 # R E G I O N S
@@ -25,7 +25,7 @@ export DEPLOY_TO_REGIONS="us-west-2 us-east-1 eu-west-1"
 # allowed IP addresses. The default is to restrict access to the current public IP (
 # probably your internet gateway, so it will only be accessible from your network).
 # To allow open/unrestricted access, set this to 0.0.0.0/0.
-export ALLOWED_IPS="${ALLOWED_IPS:-$(curl -s checkip.amazonaws.com)/32}"
+export ALLOWED_IPS="${ALLOWED_IPS:-$(curl --fail --silent --show-error https://checkip.amazonaws.com)/32}"
 
 # The prefix of the bucket name to use for deployment artifacts. This will be suffixed
 # with the region name, and a bucket with the resuling name must exist in each deployment
@@ -40,6 +40,13 @@ export DEPLOY_BUCKET_PATH_PREFIX="${DEPLOY_BUCKET_PATH_PREFIX:-builds}"
 
 # The name of the stack to deploy.
 export STACK_NAME="${STACK_NAME:-dns-filter}"
+export BLOCKLIST_PROFILE="${BLOCKLIST_PROFILE:-Balanced}"
+export SYNC_SCHEDULE="${SYNC_SCHEDULE:-rate(8 hours)}"
+export SYNC_ENABLED="${SYNC_ENABLED:-true}"
+export SYNC_WORKER_MODE="${SYNC_WORKER_MODE:-sync}"
+export OPERATIONAL_LOG_RETENTION="${OPERATIONAL_LOG_RETENTION:-30}"
+export ENABLE_ADMIN_UI="${ENABLE_ADMIN_UI:-true}"
+export SUSPICIOUS_DOMAIN_EMAIL="${SUSPICIOUS_DOMAIN_EMAIL:-}"
 
 # Optionally, to set a custom domain name for DNS over HTTPS endpoint uncomment the line
 # below and set the domain name you want to use.  The domain will need to be registered

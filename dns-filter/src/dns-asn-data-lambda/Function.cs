@@ -2,6 +2,7 @@ using System.IO.Compression;
 using Amazon.DynamoDBv2;
 using Amazon.Lambda.Core;
 using Amazon.S3;
+using Amazon.DynamoDBv2.Model;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -23,7 +24,7 @@ public class Function(IAmazonDynamoDB ddb, IAmazonS3 s3, HttpClient http)
         context.Logger.LogInformation("FunctionHandler started");
 
         var blockedAsns = await GetBlockedAsnsAsync(cts.Token);
-        var ranges = await GetBlockedAsnRanges(blockedAsns, cts.Token);
+        List<AsnRange> ranges = blockedAsns.Count == 0 ? [] : await GetBlockedAsnRanges(blockedAsns, cts.Token);
 
         context.Logger.LogInformation($"Retrieved {ranges.Count} ASN ranges for blocked ASNs");
         var asnData = AsnBlockWriter.ProcessWriteAsnData(ranges, cts.Token);
@@ -43,31 +44,34 @@ public class Function(IAmazonDynamoDB ddb, IAmazonS3 s3, HttpClient http)
 
     internal async Task<HashSet<uint>> GetBlockedAsnsAsync(CancellationToken token)
     {
-        var response = await ddb.QueryAsync(new()
+        HashSet<uint> blockedAsns = [];
+        Dictionary<string, AttributeValue>? start = null;
+        do
         {
-            TableName = Function.TABLE_NAME,
-            IndexName = "GSI1",
-            KeyConditionExpression = "GSI1PK = :pk",
-            ExpressionAttributeValues = new()
+            var response = await ddb.QueryAsync(new()
             {
-                [":pk"] = new() { S = "BLOCKED_ASNS" }
-            },
-            ProjectionExpression = "asn"
-        }, token);
-        if (response.HttpStatusCode != System.Net.HttpStatusCode.OK)
-        {
-            throw new InvalidOperationException($"Failed to query blocked ASNs: {response.HttpStatusCode}");
-        }
-        var blockedAsns = response.Items.Select(item =>
-            item.TryGetValue("asn", out var asnAttr) && asnAttr.N is string asnStr && uint.TryParse(asnStr, out var asn)
-                ? asn : 0u).Where(asn => asn != 0).ToHashSet();
+                TableName = Function.TABLE_NAME, IndexName = "GSI1", ExclusiveStartKey = start,
+                KeyConditionExpression = "GSI1PK = :pk",
+                ExpressionAttributeValues = new() { [":pk"] = new() { S = "BLOCKED_ASNS" } },
+                ProjectionExpression = "asn"
+            }, token);
+            if (response.HttpStatusCode != System.Net.HttpStatusCode.OK)
+                throw new InvalidOperationException($"Failed to query blocked ASNs: {response.HttpStatusCode}");
+            foreach (var item in response.Items)
+            {
+                if (!item.TryGetValue("asn", out var value) || !uint.TryParse(value.N, out var asn) || asn == 0)
+                    throw new InvalidDataException("Invalid ASN rule in BLOCKED_ASNS index.");
+                blockedAsns.Add(asn);
+            }
+            start = response.LastEvaluatedKey;
+        } while (start?.Count > 0);
         return blockedAsns;
     }
 
     internal async Task<List<AsnRange>> GetBlockedAsnRanges(HashSet<uint> blockedAsns, CancellationToken token)
     {
         const string url = "https://iptoasn.com/data/ip2asn-combined.tsv.gz";
-        using var response = await http.GetAsync(url, token);
+        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
         response.EnsureSuccessStatusCode();
 
         using var compressed = await response.Content.ReadAsStreamAsync(token);

@@ -484,3 +484,10 @@ $RECYCLE.BIN/
 *.swp
 
 .aws-sam/*
+
+.build/
+src/dns-admin-web/node_modules/
+global-stack-outputs.json
+*.outputs
+dns-filter.zip
+src/*/public_suffix_list.dat
