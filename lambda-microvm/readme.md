@@ -125,7 +125,9 @@ List the MicroVMs started from the image (one per tenant that has received packe
 aws lambda-microvms list-microvms --image-identifier ${MICROVM_IMAGE_ARN}
 ```
 
-The application logs a JSON line when it starts (with the run hook payload) and one per packet. They're in the `/proxylity/microvms/lambda-microvm-example` log group (the `MicrovmLogGroup` output), in a stream named after the MicroVM ID, alongside the image build logs. Lambda forwards application output only because the MicroVM runs with an execution role; without `ExecutionRoleArn`, nothing the application writes reaches CloudWatch.
+The application logs a JSON line when it starts (with the run hook payload) and one per packet. They're in the `/aws/lambda-microvms/lambda-microvm-example-echo` log group (the `MicrovmLogGroup` output), in a stream named after the date, image version and MicroVM ID (for example `2026/11/09[1.0]microvm-...`), alongside the image build logs. Lambda forwards application output only because the MicroVM runs with an execution role; without `ExecutionRoleArn`, nothing the application writes reaches CloudWatch.
+
+> **Note**: The log group name matters. The image's `Logging` setting applies to the image build. Running MicroVMs write their output to Lambda's default group, `/aws/lambda-microvms/<image-name>`, using the execution role, unless the destination's `RuntimeLogGroupName` argument names another group. The template uses the default name and scopes the execution role to it. If the execution role can't write to the group, runtime output is dropped without an error. To give each tenant one log stream (`00`, `01`, `02` and `03` here) instead of one per MicroVM, add `UseTenantIdForLogStreamName: "true"` to the destination's arguments.
 
 Delivery errors from the Proxylity destination are written to the `/proxylity/udp-listeners/lambda-microvm-example` log group.
 

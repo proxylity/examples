@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  A serverless iperf2 UDP server: Proxylity UDP Gateway delivers iperf2 datagrams to a Lambda MicroVM,
+  where a NativeAOT C# app keeps each test's statistics in memory and answers the client's FIN with a
+  standard iperf2 server report. No VPC, cache, or long-running server is needed.
+  Requires an active Proxylity UDP Gateway subscription, and Lambda MicroVMs in the target region.
+
+Parameters:
+  ClientCidrToAllow:
+    Description: >
+      CIDR allowed to send packets to the listener, for example your public address as 203.0.113.10/32.
+      scripts/deploy.sh fills this in with your current public IP address.
+    Type: String
+    AllowedPattern: '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$'
+  TenantId:
+    Description: >
+      Fixed tenant ID for the MicroVM destination. All tests share one MicroVM; each test is a separate
+      flow in its memory. Change this value (scripts/fresh-vm.sh) to start a brand new MicroVM.
+    Type: String
+    Default: iperf2-1
+  Architecture:
+    Description: CPU architecture of the MicroVM. Must match the NativeAOT build (scripts/publish.sh RID).
+    Type: String
+    Default: X86_64
+    AllowedValues: [X86_64, ARM_64]
+  BaseImageVersion:
+    Description: Version of the al2023-1 MicroVM base image. x86_64 needs version 3 or later.
+    Type: String
+    Default: "3"
+  MemoryMiB:
+    Description: Baseline MicroVM memory (vCPU scales with it; the MicroVM can burst to 4x).
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096, 8192]
+  IdleDurationSeconds:
+    Description: >
+      Seconds without packets before the MicroVM is suspended (60 to 28800). Its memory survives a suspend, and the
+      next packet resumes it, so a test after a long pause just takes a little longer to start.
+    Type: String
+    Default: "900"
+
+Mappings:
+  ProxylityConfig:
+    Fn::Transform:
+      Name: AWS::Include
+      Parameters:
+        Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
+
+Resources:
+  # Image build logs and the MicroVMs' runtime logs (the app's JSON event lines, one stream per MicroVM).
+  # It uses Lambda's default name, /aws/lambda-microvms/<image-name>: the image's Logging setting applies to the
+  # build, and running MicroVMs write to the default group (using the execution role) unless the destination's
+  # RuntimeLogGroupName argument names another one. Creating the group here bounds its retention and lets the
+  # execution role be scoped to it. If the execution role can't write to the group, runtime output is dropped.
+  MicrovmLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda-microvms/${AWS::StackName}-server"
+      RetentionInDays: 7
+
+  # The image: build/image/ (Dockerfile + native executable), zipped and uploaded by scripts/deploy.sh,
+  # which replaces CodeUri with the S3 location.
+  Iperf2MicrovmImage:
+    Type: AWS::Serverless::MicrovmImage
+    Properties:
+      Name: !Sub "${AWS::StackName}-server"
+      Description: Serverless iperf2 UDP server for Proxylity UDP Gateway.
+      CodeUri: build/image/
+      BaseImageArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:microvm-image:al2023-1"
+      BaseImageVersion: !Ref BaseImageVersion
+      CpuConfigurations:
+        - Architecture: !Ref Architecture
+      Resources:
+        - MinimumMemoryInMiB: !Ref MemoryMiB
+      Logging:
+        CloudWatch:
+          LogGroup: !Ref MicrovmLogs
+      # /ready (build) tells Lambda the app is listening, so the snapshot is taken in a ready state.
+      # /run (start) gives each MicroVM its ID, tenant and settings. Both are served on 9000, outside the
+      # port-8080 scope of the tokens Proxylity uses.
+      Hooks:
+        Port: 9000
+        MicrovmImageHooks:
+          Ready: ENABLED
+          ReadyTimeoutInSeconds: 60
+        MicrovmHooks:
+          Run: ENABLED
+          RunTimeoutInSeconds: 10
+
+  # The role MicroVMs run with. It lets Lambda forward the app's stdout to CloudWatch Logs. The app
+  # calls no AWS APIs. (The reverse-mode follow-up will add sns:Publish on the PacketSource topic here.)
+  MicrovmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: microvm-runtime-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MicrovmLogs}"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MicrovmLogs}:*"
+
+  DeliveryLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/proxylity/udp-listeners/${AWS::StackName}"
+      RetentionInDays: 7
+
+  # Assumed by Proxylity to start MicroVMs from the image and get tokens to post batches to them.
+  DestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceRole]
+            Action: sts:AssumeRole
+
+  DestinationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-destination-policy"
+      Roles:
+        - !Ref DestinationRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # MicroVM actions are authorized against the image, so this limits the destination to
+          # MicroVMs started from this stack's image.
+          - Sid: MicrovmsFromThisImage
+            Effect: Allow
+            Action:
+              - lambda:RunMicrovm
+              - lambda:GetMicrovm
+              - lambda:ResumeMicrovm
+              - lambda:TerminateMicrovm
+              - lambda:GetMicrovmImage
+              - lambda:GetMicrovmImageVersion
+              - lambda:CreateMicrovmAuthToken
+            Resource: !GetAtt Iperf2MicrovmImage.ImageArn
+          # HTTPS ingress for packet delivery, and the default internet egress connector.
+          - Sid: PassNetworkConnectors
+            Effect: Allow
+            Action: lambda:PassNetworkConnector
+            Resource:
+              - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:HTTP_INGRESS"
+              - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+          - Sid: PassMicrovmExecutionRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmExecutionRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: CloudWatchMetrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: "*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "${DeliveryLogs.Arn}:*"
+
+  UdpListener:
+    Type: Custom::ProxylityUdpGatewayListener
+    DependsOn: DestinationPolicy
+    Properties:
+      ServiceToken: !FindInMap [ProxylityConfig, !Ref AWS::Region, ServiceToken]
+      ApiKey: !FindInMap [ProxylityConfig, Account, ApiKey]
+      Protocols:
+        - udp
+      ClientRestrictions:
+        Networks:
+          - !Ref ClientCidrToAllow
+      Destinations:
+        - Description: iperf2 datagrams to the MicroVM that keeps each test's statistics in memory.
+          Role:
+            Arn: !GetAtt DestinationRole.Arn
+          Formatter: base64
+          # Up to 100 datagrams or 50 ms per batch. Each packet keeps its own ReceivedAt, which is what
+          # the statistics use, so batching delay never shows up as jitter.
+          Batching:
+            Count: 100
+            TimeoutInSeconds: 0.05
+          MetricsEnabled: true
+          LogGroupName: !Ref DeliveryLogs
+          DestinationArn: !GetAtt Iperf2MicrovmImage.ImageArn
+          Arguments:
+            # One MicroVM for every test. iperf2 datagrams carry no per-test ID, so a TenantIdExpression
+            # (which only sees payload bytes) cannot separate tests; a payload-derived tenant would split one
+            # test across MicroVMs. Flows are separated in memory by remote IP:port instead.
+            TenantId: !Ref TenantId
+            IdleDurationSeconds: !Ref IdleDurationSeconds
+            ExecutionRoleArn: !GetAtt MicrovmExecutionRole.Arn
+            # App settings, delivered to the /run hook. Reverse mode will add PacketSourceTopicArn here.
+            RunHookExtraData: '{"FinGraceMs":150,"LogBatches":true}'
+
+Outputs:
+  Domain:
+    Description: Listener domain name
+    Value: !Sub "${UdpListener.Domain}.proxylity.com"
+  Port:
+    Description: Listener UDP port
+    Value: !GetAtt UdpListener.Port
+  IperfCommand:
+    Description: Run a test with a stock iperf2 client
+    Value: !Sub "iperf -u -c ${UdpListener.Domain}.proxylity.com -p ${UdpListener.Port} -t 10 -b 1M"
+  MicrovmImageArn:
+    Description: ARN of the MicroVM image
+    Value: !GetAtt Iperf2MicrovmImage.ImageArn
+  MicrovmLogGroup:
+    Description: Image build logs and the app's JSON event logs (the proof scripts' evidence)
+    Value: !Ref MicrovmLogs
+  DeliveryLogGroup:
+    Description: Proxylity delivery error logs
+    Value: !Ref DeliveryLogs
+  TenantId:
+    Description: Tenant ID currently in use (changing it starts a fresh MicroVM)
+    Value: !Ref TenantId

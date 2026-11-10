@@ -22,14 +22,17 @@ Mappings:
         Location: !Sub "s3://proxylity-config-${AWS::Region}/${AWS::AccountId}/customer-config.json"
 
 Resources:
-  # Build and runtime logs for the MicroVM image, with bounded retention. Without this, Lambda creates
-  # /aws/lambda-microvms/<image-name> on first use and keeps its logs indefinitely.
+  # Build and runtime logs for the MicroVM image, with bounded retention. It uses Lambda's default name,
+  # /aws/lambda-microvms/<image-name>: the image's Logging setting applies to the build, and running MicroVMs write
+  # to the default group (using the execution role) unless the destination's RuntimeLogGroupName argument names
+  # another one. If the execution role can't write to the group, runtime output is dropped without an error.
+  # Creating the group here also bounds its retention (Lambda would keep logs indefinitely).
   MicrovmLogs:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      LogGroupName: !Sub "/proxylity/microvms/${AWS::StackName}"
+      LogGroupName: !Sub "/aws/lambda-microvms/${AWS::StackName}-echo"
       RetentionInDays: 7
 
   # The MicroVM image. Lambda builds a snapshot from the Dockerfile and app in src/echo-microvm.
@@ -126,7 +129,7 @@ Resources:
             # resume it if it's suspended. Without them, a MicroVM that's gone is only replaced when its
             # cache entry expires at the end of its 8-hour lifetime.
             Action:
-              # TerminateMicrovm stops the extra MicroVM when two proxy-app nodes start one for the same
+              # TerminateMicrovm stops the extra MicroVM when two Proxylity nodes start one for the same
               # tenant at the same moment; only one of them is used.
               - lambda:RunMicrovm
               - lambda:GetMicrovm

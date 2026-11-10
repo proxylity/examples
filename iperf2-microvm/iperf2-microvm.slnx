@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Iperf2.MicroVm/Iperf2.MicroVm.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Iperf2.Tests/Iperf2.Tests.csproj" />
+  </Folder>
+</Solution>
